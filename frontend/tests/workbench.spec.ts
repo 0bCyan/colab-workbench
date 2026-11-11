@@ -102,6 +102,17 @@ test('settings dialog preserves the workspace and supports save, cancellation, e
   await trigger.click()
   await expect(dialog).toBeVisible()
   await expect(save).toBeDisabled()
+  await dialog.getByRole('button', {name:'切换到 colab2',exact:true}).click()
+  await expect(save).toBeEnabled()
+  await expect(page.locator('.account-field select')).toHaveValue('colab2')
+  expect(await page.evaluate(() => localStorage.getItem('fieldwork-account'))).toBe('colab2')
+  await page.route('**/api/settings', route => route.fulfill({status:500,body:'Account-only confirmation must not write settings'}))
+  await save.click()
+  await expect(dialog).toHaveCount(0)
+  await page.unroute('**/api/settings')
+  expect((await (await page.request.get('/api/state')).json()).settings).toEqual(initial)
+  await trigger.click()
+  await expect(save).toBeDisabled()
   await expect(identity).toBeHidden()
   await idle.selectOption('60')
   await exitSwitch.focus()
@@ -191,6 +202,7 @@ test('settings dialog preserves the workspace and supports save, cancellation, e
 test('artwork management supports search, rename, cancel deletion, bulk trash, restore and purge', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '创作工作台' })).toBeVisible()
+  await page.getByLabel('当前账号', {exact:true}).selectOption('colab2')
   const initial = await (await page.request.get('/api/state')).json()
   const draft = await (await page.request.get('/api/template')).json()
   const headers = { 'x-workbench-token': initial.token }
@@ -275,4 +287,68 @@ test('compact layout keeps primary controls visible and mobile panel switching u
   await expect(page.locator('.job-card')).toHaveCount(1)
   await expect(page.getByRole('button', {name:/^删除 /}).first()).toBeInViewport()
   await page.screenshot({path:'../screenshots/review/05-tested-mobile-library.png'})
+})
+
+test('account lists support empty, single, two and many profiles with a stale selection', async ({ page }) => {
+  const errors: string[] = []
+  const refreshes: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('https://fonts.googleapis.com/**', route => route.abort())
+  await page.addInitScript(() => localStorage.setItem('fieldwork-account', 'colab99'))
+  let ids: string[] = []
+  await page.route('**/api/state', async route => {
+    const response = await route.fetch()
+    const state = await response.json()
+    state.accounts = ids.map(id => ({...state.accounts[0],id,installed:true,credential_present:true,sessions:[],machine:{account:id,phase:'stopped',session:null,port:null}}))
+    await route.fulfill({json:state})
+  })
+  await page.route('**/api/accounts/*/refresh', async route => {
+    refreshes.push(route.request().url().split('/').at(-2)!)
+    await route.fulfill({json:{}})
+  })
+  await page.route('**/api/accounts/*/metrics', route => route.fulfill({json:{status:'offline',sample:null,history:[]}}))
+  for (const count of [0, 1, 2, 12]) {
+    ids = count <= 2 ? ['colab7','colab12'].slice(0,count) : Array.from({length:count},(_,i)=>`colab${i+1}`)
+    refreshes.length = 0
+    const viewport = count === 12 ? {width:339,height:640} : {width:1280,height:720}
+    await page.setViewportSize(viewport)
+    await page.goto('/')
+    await expect(page.getByRole('heading',{name:'创作工作台',exact:true})).toBeVisible()
+    const current = page.locator('.account-field select')
+    await expect(current).toHaveValue(ids[0] ?? '')
+    if (count === 0) {
+      await expect(current).toBeDisabled()
+      await expect(page.getByRole('button',{name:/^生成视频/})).toBeDisabled()
+      await expect(page.getByRole('button',{name:'启动 GPU',exact:true})).toBeDisabled()
+    }
+    await page.getByRole('button',{name:'工作台设置',exact:true}).click()
+    const dialog = page.getByRole('dialog',{name:'工作台设置',exact:true})
+    const cards = dialog.locator('.settings-account')
+    await expect(cards).toHaveCount(count)
+    const save = dialog.getByRole('button',{name:'保存设置',exact:true})
+    await expect(save).toBeInViewport()
+    await expect(dialog.getByRole('switch',{name:'退出时释放机器'})).toBeInViewport()
+    if (count === 0) await expect(dialog.getByText('未发现本机账号', {exact:true})).toBeVisible()
+    if (count === 1) {
+      const card = (await cards.first().boundingBox())!
+      const list = (await dialog.locator('.settings-account-list').boundingBox())!
+      expect(Math.abs(card.width-list.width)).toBeLessThan(2)
+    }
+    if (count === 2) {
+      expect((await cards.nth(0).boundingBox())!.y).toBe((await cards.nth(1).boundingBox())!.y)
+    }
+    if (count > 1) {
+      if (count > 3) expect(await dialog.locator('.settings-account-list').evaluate(el=>el.scrollHeight>el.clientHeight)).toBeTruthy()
+      await cards.last().click()
+      await expect(cards.last()).toHaveAttribute('aria-pressed','true')
+      await expect(current).toHaveValue(ids.at(-1)!)
+      await expect(save).toBeEnabled()
+    }
+    expect(await page.evaluate(()=>({width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight}))).toEqual(viewport)
+    await page.screenshot({path:`../screenshots/review/22-settings-${count}-accounts.png`})
+    await dialog.getByLabel('关闭弹窗').click()
+    expect(refreshes.every(id=>ids.includes(id))).toBeTruthy()
+    if (!count) expect(refreshes).toEqual([])
+  }
+  expect(errors).toEqual([])
 })

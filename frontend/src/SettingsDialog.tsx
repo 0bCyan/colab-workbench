@@ -16,10 +16,11 @@ type Props = {
 
 export default function SettingsDialog({ saved, accounts, account, busy, chooseAccount, save, close }: Props) {
   const [value, change] = useState(() => ({ ...saved }))
+  const [accountChanged, setAccountChanged] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const disabled = busy || saving
-  const dirty = value.identity !== saved.identity || value.idle_minutes !== saved.idle_minutes || value.stop_on_exit !== saved.stop_on_exit
+  const dirty = accountChanged || value.identity !== saved.identity || value.idle_minutes !== saved.idle_minutes || value.stop_on_exit !== saved.stop_on_exit
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -35,11 +36,12 @@ export default function SettingsDialog({ saved, accounts, account, busy, chooseA
     <form onSubmit={submit}>
       <div className="settings-content">
         <section className="settings-accounts" aria-label="本机账号">
-          <div className="settings-section-label"><h3>计算账号</h3><span>切换即生效</span></div>
-          <div className="settings-account-list">{accounts.map(profile => <button type="button" key={profile.id} className="settings-account" disabled={disabled} aria-label={`切换到 ${profile.id}`} aria-pressed={profile.id === account} onClick={() => chooseAccount(profile.id)}>
+          <div className="settings-section-label"><h3>计算账号</h3>{accounts.length > 1 && <span>切换即生效</span>}</div>
+          <div className="settings-account-list" style={{ gridTemplateColumns: `repeat(${Math.min(accounts.length || 1, 3)}, minmax(0, 1fr))` }}>{accounts.map(profile => <button type="button" key={profile.id} className="settings-account" disabled={disabled} aria-label={`切换到 ${profile.id}`} aria-pressed={profile.id === account} onClick={() => { if (profile.id !== account) { chooseAccount(profile.id); setAccountChanged(true) } }}>
             <span className="settings-account-name"><strong>{profile.id}</strong><Check size={13} aria-hidden="true" /></span>
-            <span className="settings-account-status"><span className={`tiny-dot ${profile.machine.phase === 'ready' ? '' : 'muted'}`} />{profile.credential_present ? phaseLabel[profile.machine.phase] : '待登录'}</span>
+            <span className="settings-account-status"><span className={`tiny-dot ${profile.machine.phase === 'ready' ? '' : 'muted'}`} />{!profile.installed ? '未安装入口' : profile.credential_present ? phaseLabel[profile.machine.phase] : '待登录'}</span>
           </button>)}</div>
+          {!accounts.length && <p className="settings-account-empty">未发现本机账号</p>}
         </section>
 
         <div className="settings-lifecycle">

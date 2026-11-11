@@ -8,7 +8,7 @@
 .settings-section-label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
 .settings-section-label h3,.settings-identity>span{font-size:12px;font-weight:550;color:#526148}
 .settings-section-label>span{font-size:10px;color:#7a886e}
-.settings-account-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.settings-account-list{display:grid;gap:8px;max-height:200px;overflow:auto;scrollbar-width:thin}
 .settings-account{min-width:0;padding:12px;text-align:left;border:1px solid #e0e6d8;border-radius:8px;background:#fff;transition:background .15s,border-color .15s}
 .settings-account:hover{background:#f3f7ec;border-color:#cbd8bb}
 .settings-account[aria-pressed=true]{background:#eef4e3;border-color:#b8cb9e}
@@ -18,6 +18,9 @@
 .settings-account[aria-pressed=true] .settings-account-name svg{visibility:visible}
 .settings-account-status{display:flex;align-items:center;gap:5px;margin-top:7px;font-size:10px;color:#7b8b6d;white-space:nowrap}
 .settings-account-status .tiny-dot{width:4px;height:4px}.settings-account-status .tiny-dot.muted{background:#aeb8a3}
+.settings-account:focus-visible{outline-offset:-3px}
+.settings-account:only-child{display:flex;align-items:center;justify-content:space-between;gap:12px}.settings-account:only-child .settings-account-name{gap:10px}.settings-account:only-child .settings-account-status{margin-top:0}
+.settings-account-empty{font-size:12px;color:#7a886e;padding:10px 0}
 .settings-lifecycle{margin-top:20px;border-top:1px solid #e5e9de}
 .setting-row{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:72px;padding:16px 0;border-bottom:1px solid #e5e9de}
 .setting-copy{display:flex;flex-direction:column;gap:5px;min-width:0}

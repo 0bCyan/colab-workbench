@@ -53,7 +53,8 @@ class ArtworkName(BaseModel):
 
 
 def create_app(directory=DATA, driver=None, account_profiles=None):
-    account_profiles = account_profiles or profiles()
+    configured_profiles = account_profiles
+    account_profiles = []
     token = secrets.token_urlsafe(32)
 
     @asynccontextmanager
@@ -63,6 +64,10 @@ def create_app(directory=DATA, driver=None, account_profiles=None):
         lock = FileLock(directory / "server.lock", timeout=0)
         with lock:
             store = Store(directory)
+            # Keep live sessions visible even if their launcher was removed.
+            account_profiles[:] = configured_profiles if configured_profiles is not None else profiles(
+                machine["account"] for machine in store.all("machines") if machine.get("session")
+            )
             colab = driver or Colab(account_profiles, directory)
             manager = Manager(store, colab, account_profiles)
             app.state.store, app.state.manager = store, manager

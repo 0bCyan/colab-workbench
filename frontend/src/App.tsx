@@ -21,7 +21,7 @@ const getNode = (graph: Graph | undefined, type: string) => Object.values(graph 
 export default function App() {
   const [connected, setConnected] = useState(false)
   const [state, setState] = useState<State | null>(null)
-  const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || 'colab2')
+  const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || '')
   const [draft, setDraft] = useState<Draft | null>(null)
   const [page, setPage] = useState<'studio' | 'library'>('studio')
   const [mobilePanel, setMobilePanel] = useState<'stage' | 'editor' | 'compute'>('stage')
@@ -65,7 +65,17 @@ export default function App() {
   }, [refresh])
 
   useEffect(() => {
-    if (!state || known.current.has(account)) return
+    if (!state || state.accounts.some(profile => profile.id === account)) return
+    const next = state.accounts.find(profile => profile.installed && profile.credential_present)
+      ?? state.accounts.find(profile => profile.installed) ?? state.accounts[0]
+    setAccount(next?.id ?? '')
+    if (next) localStorage.setItem('fieldwork-account', next.id)
+    else localStorage.removeItem('fieldwork-account')
+  }, [account, state])
+
+  useEffect(() => {
+    const profile = state?.accounts.find(profile => profile.id === account)
+    if (!profile?.installed || !profile.credential_present || known.current.has(account)) return
     known.current.add(account)
     api(`/accounts/${account}/refresh`, 'POST').then(refresh).catch(() => refresh())
   }, [account, state, refresh])
@@ -85,7 +95,7 @@ export default function App() {
   }, [draft])
 
   useEffect(() => {
-    if (modal !== 'logs') return
+    if (modal !== 'logs' || !account) return
     const load = () => api<{ time: number; message: string }[]>(`/accounts/${account}/logs`).then(setLogs).catch(e => setError(e.message))
     load(); const timer = setInterval(load, 3000); return () => clearInterval(timer)
   }, [modal, account])
@@ -188,20 +198,20 @@ export default function App() {
             <div className="preview-caption"><span>{displayedJob?.name}<small>{displayedJob?.account} · 已保存到本地</small></span><a className="preview-download" aria-label="下载当前成片" href={(video || images[0]).url} download><ArrowDownToLine size={17} /></a></div></div> : <div className="preview-empty" role="status">{displayedJob && activeStatuses.has(displayedJob.status) ? <><LoaderCircle size={28} className="spin" /><strong>{statusLabel[displayedJob.status]}</strong><span>{displayedJob.message}</span></> : <><Film size={32} strokeWidth={1.2} /><strong>{displayedJob ? statusLabel[displayedJob.status] : '等待创作'}</strong><span>{displayedJob ? displayedJob.message : '生成后在这里预览'}</span></>}</div>}
           <div className="stage-status"><span><span className={`tiny-dot ${machine?.phase === 'ready' ? '' : 'muted'}`} />{running.length ? running[0].message : '准备好下一次创作'}</span><button className="text-button" onClick={() => setPage('library')}>全部任务 <ArrowUpRight size={13} /></button></div>
         </div>
-        <div className="render-bar panel"><div><div className="render-title"><Sparkles size={16} /><strong>{running.length ? `${running.length} 个任务进行中` : machine?.phase === 'ready' ? 'GPU 已就绪' : '按需启动 GPU'}</strong></div></div><button className="primary generate" onClick={generate} disabled={!!busy || !profile?.credential_present || machine?.phase === 'stopping'}><Play size={16} fill="currentColor" />{busy === 'generate' ? '提交中…' : running.length ? '加入队列' : '生成视频'}<span>↗</span></button></div>
+        <div className="render-bar panel"><div><div className="render-title"><Sparkles size={16} /><strong>{running.length ? `${running.length} 个任务进行中` : machine?.phase === 'ready' ? 'GPU 已就绪' : '按需启动 GPU'}</strong></div></div><button className="primary generate" onClick={generate} disabled={!!busy || !profile?.installed || !profile.credential_present || machine?.phase === 'stopping'}><Play size={16} fill="currentColor" />{busy === 'generate' ? '提交中…' : running.length ? '加入队列' : '生成视频'}<span>↗</span></button></div>
         <div className="under-stage"><label className="checkbox"><input type="checkbox" checked={stopAfter} onChange={e => setStopAfter(e.target.checked)} />取回成片后关闭 GPU</label></div>
         {running.length > 0 && <div className="current-jobs">{running.slice(0, 1).map(j => <div className="current-job" key={j.id}><div><span className="status-chip working"><LoaderCircle size={12} className="spin" />{statusLabel[j.status]}</span><strong>{j.name}</strong><span>{j.message}</span></div><div className="inline-actions">{j.status === 'recovering' && <button className="text-button" disabled={!!busy} onClick={() => action('resume', () => api(`/jobs/${j.id}/resume`, 'POST'))}>恢复查询</button>}<button className="text-button" onClick={() => action('cancel', () => api(`/jobs/${j.id}/cancel`, 'POST'))} disabled={!!busy}>取消</button></div>{j.progress != null && <div className="progress-track"><span style={{ width: `${j.progress}%` }} /></div>}</div>)}</div>}
         </section>
 
-        <aside className="compute-column"><section className="compute-panel panel"><header className="panel-heading"><span><Cloud size={16} /> 云端计算</span><button className="icon-button" aria-label="刷新账号状态" title="刷新余额与会话" disabled={!!busy} onClick={() => action('refresh', () => api(`/accounts/${account}/refresh`, 'POST'))}><RefreshCw size={14} className={busy === 'refresh' ? 'spin' : ''} /></button></header><div className="compute-body">
-          <label className="field account-field"><span>当前账号</span><select aria-label="当前账号" value={account} onChange={e => { setAccount(e.target.value); localStorage.setItem('fieldwork-account', e.target.value) }}>{state.accounts.map(p => <option value={p.id} key={p.id}>{p.id} · {p.credential_present ? '已配置' : '待登录'}</option>)}</select></label>
+        <aside className="compute-column"><section className="compute-panel panel"><header className="panel-heading"><span><Cloud size={16} /> 云端计算</span><button className="icon-button" aria-label="刷新账号状态" title="刷新余额与会话" disabled={!!busy || !profile?.installed || !profile.credential_present} onClick={() => action('refresh', () => api(`/accounts/${account}/refresh`, 'POST'))}><RefreshCw size={14} className={busy === 'refresh' ? 'spin' : ''} /></button></header><div className="compute-body">
+          <label className="field account-field"><span>当前账号</span><select aria-label="当前账号" disabled={!state.accounts.length} value={account} onChange={e => { setAccount(e.target.value); localStorage.setItem('fieldwork-account', e.target.value) }}>{!state.accounts.length && <option value="">未发现账号</option>}{state.accounts.map(p => <option value={p.id} key={p.id}>{p.id} · {!p.installed ? '未安装入口' : p.credential_present ? '已配置' : '待登录'}</option>)}</select></label>
           {state.accounts.filter(p => p.id !== account && p.machine.session).map(p => <button className="other-account" key={p.id} onClick={() => { setAccount(p.id); localStorage.setItem('fieldwork-account', p.id) }}><span className="tiny-dot" />{p.id} 的机器仍在运行<ArrowUpRight size={12} /></button>)}
           <div className="gpu-summary"><span><Cpu size={15} />RTX PRO 6000 <small>96 GB</small></span><span className={`status-chip ${machine?.phase === 'ready' ? 'success' : computing ? 'working' : ''}`}>{phaseLabel[machine?.phase ?? 'stopped']}</span></div>
           <div className="usage-grid"><div><span>账号余额</span><strong>{profile?.usage?.balance?.toLocaleString('en-US', { maximumFractionDigits: 2 }) ?? '—'}<small> CU</small></strong></div><div><span>账号消耗</span><strong>{profile?.usage?.rate?.toFixed(2) ?? '—'}<small> /h</small></strong></div></div>
           {(profile?.error || machine?.phase !== 'ready') && <div className="machine-message" title={profile?.error || machine?.message}>{profile?.error || machine?.message}</div>}{(profile?.sessions ?? []).filter(s => s.name !== machine?.session).length > 0 && <div className="external-sessions">另有 {(profile?.sessions ?? []).filter(s => s.name !== machine?.session).length} 台外部会话</div>}
-          {machine?.phase === 'ready' ? <a className="secondary full" href={nativeUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开 ComfyUI</a> : <button className="secondary full" disabled={!!busy || computing || !profile?.credential_present} onClick={() => action('start', () => api(`/accounts/${account}/start`, 'POST'))}>{computing ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{computing ? '正在准备…' : machine?.session ? '重新连接 / 重试部署' : '启动 GPU'}</button>}
+          {machine?.phase === 'ready' ? <a className="secondary full" href={nativeUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开 ComfyUI</a> : <button className="secondary full" disabled={!!busy || computing || !profile?.installed || !profile.credential_present} onClick={() => action('start', () => api(`/accounts/${account}/start`, 'POST'))}>{computing ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{computing ? '正在准备…' : machine?.session ? '重新连接 / 重试部署' : '启动 GPU'}</button>}
           {machine?.session && <button className="stop-button" disabled={!!busy || running.length > 0 || machine.phase === 'stopping'} title={running.length ? '请先取消未完成任务' : '释放这个工作台的云端机器'} onClick={() => action('stop', () => api(`/accounts/${account}/stop`, 'POST'))}><Power size={13} />{machine.phase === 'stopping' ? '正在关闭…' : '关闭并释放机器'}</button>}
-          <div className="compute-footer"><button className="text-button" onClick={() => setModal('logs')}><Terminal size={12} />部署日志</button><button className="text-button" aria-haspopup="dialog" onClick={() => setModal('settings')}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
+          <div className="compute-footer"><button className="text-button" disabled={!profile} onClick={() => setModal('logs')}><Terminal size={12} />部署日志</button><button className="text-button" aria-haspopup="dialog" onClick={() => setModal('settings')}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
         </div></section>
         {machine && <Performance account={account} machine={machine} />}
         </aside>
@@ -211,8 +221,10 @@ export default function App() {
     </div>
 
     {modal === 'settings' && <SettingsDialog saved={state.settings} accounts={state.accounts} account={account} busy={!!busy} close={() => setModal(null)} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} save={async value => {
-      const saved = await api<Settings>('/settings', 'PUT', value)
-      setState(previous => previous ? { ...previous, settings: saved } : previous)
+      if (value.identity !== state.settings.identity || value.idle_minutes !== state.settings.idle_minutes || value.stop_on_exit !== state.settings.stop_on_exit) {
+        const saved = await api<Settings>('/settings', 'PUT', value)
+        setState(previous => previous ? { ...previous, settings: saved } : previous)
+      }
       setModal(null)
       setNotice('设置已保存')
     }} />}

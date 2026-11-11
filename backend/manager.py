@@ -106,7 +106,7 @@ class Manager:
                     session = None
                 if not session:
                     install = self.store.get("meta", "install")["id"]
-                    session = f"wb-{install}-{account[-1]}-{uuid.uuid4().hex[:6]}"
+                    session = f"wb-{install}-{account.removeprefix('colab')}-{uuid.uuid4().hex[:6]}"
                     self.machine(account, session=session, phase="provisioning", message="申请 G4 / RTX PRO 6000", created_at=time.time())
                     self.log(account, f"申请会话 {session}")
                     await self.colab.create(account, session)
@@ -407,7 +407,7 @@ class Manager:
                     self.machine(account, phase="stopped", message="机器已关闭", port=None)
                     return
                 install = self.store.get("meta", "install")["id"]
-                if not session.startswith(f"wb-{install}-{account[-1]}-"):
+                if not session.startswith(f"wb-{install}-{account.removeprefix('colab')}-"):
                     raise RuntimeError("此会话不属于当前工作台，拒绝停止")
                 if not force and machine.get("port") and machine["phase"] == "ready":
                     queue = await self.remote(account, "GET", "/queue", timeout=5)

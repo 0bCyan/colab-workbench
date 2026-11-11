@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowUpRight, Check, ChevronDown, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, FolderOpen, LayoutGrid, LoaderCircle, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, FolderOpen, LayoutGrid, LoaderCircle, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
 import Workflow from './Workflow'
 import Library from './Library'
 import Performance from './Performance'
 import Dialog from './Dialog'
+import SettingsPanel from './SettingsPanel'
 import Resolution, { validDimension, resolutionError } from './Resolution'
 import { type State, type Draft, type Job, type Settings, type Graph, activeStatuses, phaseLabel, statusLabel } from './types'
 
@@ -195,7 +196,7 @@ export default function App() {
         </section>
 
         <aside className="compute-column"><section className="compute-panel panel"><header className="panel-heading"><span><Cloud size={16} /> 云端计算</span><button className="icon-button" aria-label="刷新账号状态" title="刷新余额与会话" disabled={!!busy} onClick={() => action('refresh', () => api(`/accounts/${account}/refresh`, 'POST'))}><RefreshCw size={14} className={busy === 'refresh' ? 'spin' : ''} /></button></header><div className="compute-body">
-          <label className="field account-field"><span>当前账号</span><div className="account-select"><select aria-label="当前账号" value={account} onChange={e => { setAccount(e.target.value); localStorage.setItem('fieldwork-account', e.target.value) }}>{state.accounts.map(p => <option value={p.id} key={p.id}>{p.id} · {p.credential_present ? '已配置' : '待登录'}</option>)}</select><ChevronDown size={13} /></div></label>
+          <label className="field account-field"><span>当前账号</span><select aria-label="当前账号" value={account} onChange={e => { setAccount(e.target.value); localStorage.setItem('fieldwork-account', e.target.value) }}>{state.accounts.map(p => <option value={p.id} key={p.id}>{p.id} · {p.credential_present ? '已配置' : '待登录'}</option>)}</select></label>
           {state.accounts.filter(p => p.id !== account && p.machine.session).map(p => <button className="other-account" key={p.id} onClick={() => { setAccount(p.id); localStorage.setItem('fieldwork-account', p.id) }}><span className="tiny-dot" />{p.id} 的机器仍在运行<ArrowUpRight size={12} /></button>)}
           <div className="gpu-summary"><span><Cpu size={15} />RTX PRO 6000 <small>96 GB</small></span><span className={`status-chip ${machine?.phase === 'ready' ? 'success' : computing ? 'working' : ''}`}>{phaseLabel[machine?.phase ?? 'stopped']}</span></div>
           <div className="usage-grid"><div><span>账号余额</span><strong>{profile?.usage?.balance?.toLocaleString('en-US', { maximumFractionDigits: 2 }) ?? '—'}<small> CU</small></strong></div><div><span>账号消耗</span><strong>{profile?.usage?.rate?.toFixed(2) ?? '—'}<small> /h</small></strong></div></div>
@@ -210,7 +211,7 @@ export default function App() {
 
       {page === 'library' && <Library jobs={allJobs} accounts={state.accounts.map(a => a.id)} reuse={reuse} create={() => setPage('studio')} refresh={refresh} request={api} notify={setNotice} />}
 
-      {page === 'settings' && <section className="settings-panel panel"><header className="panel-heading"><span><Settings2 size={16} />工作台设置</span><span className="subtle">仅作用于此项目</span></header><div className="settings-body"><h2>连接与机器生命周期</h2><label className="field"><span>SSH 私钥路径</span><input aria-label="SSH 私钥路径" value={settings.identity} onChange={e => setSettings({ ...settings, identity: e.target.value })} /><small>使用现有账号入口建立本地隧道。账号登录凭证由 Colab CLI 维护。</small></label><label className="field"><span>空闲自动关闭</span><select aria-label="空闲自动关闭" value={settings.idle_minutes} onChange={e => setSettings({ ...settings, idle_minutes: Number(e.target.value) })}>{[0, 5, 10, 15, 30, 60, 120].map(n => <option key={n} value={n}>{n ? `空闲 ${n} 分钟后关闭` : '手动关闭'}</option>)}</select><small>检查云端队列后关闭，完整 ComfyUI 编辑器中运行的任务也会计入忙碌状态。此策略需要本地服务在线。</small></label><label className="checkbox"><input type="checkbox" checked={settings.stop_on_exit} onChange={e => setSettings({ ...settings, stop_on_exit: e.target.checked })} />正常退出本地服务时关闭工作台创建的机器</label><p className="settings-note">电脑断电、强制结束进程或网络中断可能阻止关机。再次打开时，可重新连接并核对机器状态。关闭 GPU 会清除云端临时模型；下次启动需要重新部署。</p><button className="primary" disabled={!!busy} onClick={() => action('settings', async () => { await api('/settings', 'PUT', settings); setNotice('设置已保存') })}><Check size={15} />保存设置</button><div className="account-summary"><h3>本机账号</h3>{state.accounts.map(p => <div key={p.id}><strong>{p.id}</strong><span>{p.credential_present ? '凭证文件已配置' : '尚未登录'}</span><span>{phaseLabel[p.machine.phase]}</span></div>)}<p>账号切换只改变新任务的目标。已运行的任务会继续使用原账号；可切回该账号管理机器。</p></div></div></section>}
+      {page === 'settings' && <SettingsPanel value={settings} saved={state.settings} accounts={state.accounts} account={account} busy={!!busy} saving={busy === 'settings'} change={setSettings} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} save={() => action('settings', async () => { const saved = await api<Settings>('/settings', 'PUT', settings); setSettings(saved); setNotice('设置已保存') })} />}
     </div>
 
     {modal && <Dialog title={modal === 'json' ? '编辑 API 工作流' : modal === 'logs' ? `${account} · 部署日志` : modal === 'drafts' ? '本地草稿' : '使用说明'} close={() => setModal(null)} wide={modal === 'logs' || modal === 'json'} busy={!!busy}>

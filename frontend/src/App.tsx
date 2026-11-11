@@ -4,7 +4,7 @@ import Workflow from './Workflow'
 import Library from './Library'
 import Performance from './Performance'
 import Dialog from './Dialog'
-import SettingsPanel from './SettingsPanel'
+import SettingsDialog from './SettingsDialog'
 import Resolution, { validDimension, resolutionError } from './Resolution'
 import { type State, type Draft, type Job, type Settings, type Graph, activeStatuses, phaseLabel, statusLabel } from './types'
 
@@ -23,7 +23,7 @@ export default function App() {
   const [state, setState] = useState<State | null>(null)
   const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || 'colab2')
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [page, setPage] = useState<'studio' | 'library' | 'settings'>('studio')
+  const [page, setPage] = useState<'studio' | 'library'>('studio')
   const [mobilePanel, setMobilePanel] = useState<'stage' | 'editor' | 'compute'>('stage')
   const [view, setView] = useState<'preview' | 'workflow'>('preview')
   const [error, setError] = useState('')
@@ -31,11 +31,10 @@ export default function App() {
   const [saveState, setSaveState] = useState('新建创作')
   const [busy, setBusy] = useState('')
   const [stopAfter, setStopAfter] = useState(false)
-  const [modal, setModal] = useState<'json' | 'logs' | 'drafts' | 'help' | null>(null)
+  const [modal, setModal] = useState<'json' | 'logs' | 'drafts' | 'help' | 'settings' | null>(null)
   const [json, setJson] = useState('')
   const [logs, setLogs] = useState<{ time: number; message: string }[]>([])
   const [selectedJob, selectJob] = useState<string | null>(null)
-  const [settings, setSettings] = useState<Settings | null>(null)
   const initialDraft = useRef<Draft | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const known = useRef(new Set<string>())
@@ -47,9 +46,8 @@ export default function App() {
 
   useEffect(() => {
     let alive = true
-    refresh().then(async s => {
+    refresh().then(async () => {
       if (!alive) return
-      setSettings(s.settings)
       const template = await api<Draft>('/template')
       const graph = structuredClone(template.graph)
       const input = getNode(graph, 'MiniMaxH3ImageToVideo')
@@ -151,17 +149,17 @@ export default function App() {
     await action('reuse', async () => { const full = await api<Job>(`/jobs/${job.id}`); if (full.graph) { if (draft && draft !== initialDraft.current) await api(`/drafts/${crypto.randomUUID()}`, 'PUT', savedDraft(draft)); setDraft({ name: job.name, graph: full.graph, positions: {} }); } setPage('studio'); setView('workflow'); selectJob(null); setNotice(draft === initialDraft.current ? '参数已载入' : '参数已载入，原草稿已保存副本') })
   }
 
-  if (!state || !draft || !settings) return <div className="loading-screen"><h2>视频工作台</h2><p>{error || '正在连接本地工作台…'}</p>{error && <button className="primary" onClick={() => location.reload()}>重新连接</button>}</div>
+  if (!state || !draft) return <div className="loading-screen"><h2>视频工作台</h2><p>{error || '正在连接本地工作台…'}</p>{error && <button className="primary" onClick={() => location.reload()}>重新连接</button>}</div>
 
   return <div className="app-shell">
     <aside className="rail">
       <div className="rail-nav"><button aria-label="创作工作台" title="创作工作台" className={page === 'studio' ? 'active' : ''} onClick={() => setPage('studio')}><SlidersHorizontal size={20} /><span>创作</span></button>
         <button aria-label="成片与任务" title="成片与任务" className={page === 'library' ? 'active' : ''} onClick={() => setPage('library')}><LayoutGrid size={20} /><span>作品</span>{running.length > 0 && <i />}</button></div>
-      <div className="rail-bottom"><button aria-label="使用说明" title="使用说明" onClick={() => setModal('help')}><CircleHelp size={20} /></button><button aria-label="工作台设置" title="设置" className={page === 'settings' ? 'active' : ''} onClick={() => setPage('settings')}><Settings2 size={20} /></button></div>
+      <div className="rail-bottom"><button aria-label="使用说明" title="使用说明" onClick={() => setModal('help')}><CircleHelp size={20} /></button><button aria-label="工作台设置" title="设置" aria-haspopup="dialog" className={modal === 'settings' ? 'active' : ''} onClick={() => setModal('settings')}><Settings2 size={20} /></button></div>
     </aside>
     <div className="workspace">
       <header className="workspace-header">
-        <div className="workspace-heading"><h1>{page === 'studio' ? '创作工作台' : page === 'library' ? '作品管理' : '工作台设置'}</h1><span className="local-status"><span className={`tiny-dot ${connected ? '' : 'muted'}`} />{connected ? '本地服务在线' : '本地服务离线'}</span></div>
+        <div className="workspace-heading"><h1>{page === 'studio' ? '创作工作台' : '作品管理'}</h1><span className="local-status"><span className={`tiny-dot ${connected ? '' : 'muted'}`} />{connected ? '本地服务在线' : '本地服务离线'}</span></div>
         <div className="header-actions">
           <div className="header-workflow-actions" hidden={page !== 'studio'}><button className="secondary" aria-label="导入工作流" title="导入工作流" onClick={() => fileInput.current?.click()}><Upload size={14} /><span className="action-label">导入工作流</span></button><button className="secondary" aria-label="导出" title="导出工作流" onClick={exportGraph}><Download size={14} /><span className="action-label">导出</span></button></div>
           <button className="text-button" aria-label="草稿" title="草稿" onClick={() => setModal('drafts')}><FolderOpen size={15} /><span className="action-label">草稿</span></button>
@@ -203,18 +201,23 @@ export default function App() {
           {(profile?.error || machine?.phase !== 'ready') && <div className="machine-message" title={profile?.error || machine?.message}>{profile?.error || machine?.message}</div>}{(profile?.sessions ?? []).filter(s => s.name !== machine?.session).length > 0 && <div className="external-sessions">另有 {(profile?.sessions ?? []).filter(s => s.name !== machine?.session).length} 台外部会话</div>}
           {machine?.phase === 'ready' ? <a className="secondary full" href={nativeUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开 ComfyUI</a> : <button className="secondary full" disabled={!!busy || computing || !profile?.credential_present} onClick={() => action('start', () => api(`/accounts/${account}/start`, 'POST'))}>{computing ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{computing ? '正在准备…' : machine?.session ? '重新连接 / 重试部署' : '启动 GPU'}</button>}
           {machine?.session && <button className="stop-button" disabled={!!busy || running.length > 0 || machine.phase === 'stopping'} title={running.length ? '请先取消未完成任务' : '释放这个工作台的云端机器'} onClick={() => action('stop', () => api(`/accounts/${account}/stop`, 'POST'))}><Power size={13} />{machine.phase === 'stopping' ? '正在关闭…' : '关闭并释放机器'}</button>}
-          <div className="compute-footer"><button className="text-button" onClick={() => setModal('logs')}><Terminal size={12} />部署日志</button><button className="text-button" onClick={() => setPage('settings')}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
+          <div className="compute-footer"><button className="text-button" onClick={() => setModal('logs')}><Terminal size={12} />部署日志</button><button className="text-button" aria-haspopup="dialog" onClick={() => setModal('settings')}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
         </div></section>
         {machine && <Performance account={account} machine={machine} />}
         </aside>
       </div></>}
 
       {page === 'library' && <Library jobs={allJobs} accounts={state.accounts.map(a => a.id)} reuse={reuse} create={() => setPage('studio')} refresh={refresh} request={api} notify={setNotice} />}
-
-      {page === 'settings' && <SettingsPanel value={settings} saved={state.settings} accounts={state.accounts} account={account} busy={!!busy} saving={busy === 'settings'} change={setSettings} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} save={() => action('settings', async () => { const saved = await api<Settings>('/settings', 'PUT', settings); setSettings(saved); setNotice('设置已保存') })} />}
     </div>
 
-    {modal && <Dialog title={modal === 'json' ? '编辑 API 工作流' : modal === 'logs' ? `${account} · 部署日志` : modal === 'drafts' ? '本地草稿' : '使用说明'} close={() => setModal(null)} wide={modal === 'logs' || modal === 'json'} busy={!!busy}>
+    {modal === 'settings' && <SettingsDialog saved={state.settings} accounts={state.accounts} account={account} busy={!!busy} close={() => setModal(null)} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} save={async value => {
+      const saved = await api<Settings>('/settings', 'PUT', value)
+      setState(previous => previous ? { ...previous, settings: saved } : previous)
+      setModal(null)
+      setNotice('设置已保存')
+    }} />}
+
+    {modal && modal !== 'settings' && <Dialog title={modal === 'json' ? '编辑 API 工作流' : modal === 'logs' ? `${account} · 部署日志` : modal === 'drafts' ? '本地草稿' : '使用说明'} close={() => setModal(null)} wide={modal === 'logs' || modal === 'json'} busy={!!busy}>
       {modal === 'json' && <><p>ComfyUI 的 API 格式。可以修改节点、连接、模型与参数。</p><textarea className="json-editor" aria-label="API JSON" value={json} onChange={e => setJson(e.target.value)} spellCheck={false} /><footer><button className="secondary" onClick={exportGraph}><FileJson size={14} />导出当前工作流</button><button className="primary" onClick={() => action('json', async () => { const graph = JSON.parse(json); const next = { ...draft, graph }; await api('/drafts/main', 'PUT', savedDraft(next)); setDraft(next); setModal(null); setView('workflow'); setNotice('工作流已更新') })}>应用修改</button></footer></>}
       {modal === 'logs' && <><p>安装、下载、连接与机器生命周期记录。</p><div className="logs">{logs.length ? logs.map((l, i) => <div key={i}><time>{when(l.time)}</time><pre>{l.message}</pre></div>) : <div className="log-empty">尚无部署记录。启动 GPU 后，这里会显示进度。</div>}</div></>}
       {modal === 'drafts' && <div className="draft-list">{state.drafts.length ? state.drafts.map(d => <button key={d.id} onClick={() => action('draft', async () => { const next = await api<Draft>(`/drafts/${d.id}`); setDraft({ name: next.name, graph: next.graph, positions: next.positions }); selectJob(null); setModal(null); setPage('studio') })}><FileJson size={18} /><span><strong>{d.name}{d.id === 'main' ? ' · 最近自动保存' : ''}</strong><small>{when(d.updated_at)}</small></span><ArrowUpRight size={14} /></button>) : <p>编辑工作流后会自动保存。</p>}<button onClick={() => action('template', async () => { const next = await api<Draft>('/template'); setDraft(next); selectJob(null); setModal(null); setPage('studio') })}><Plus size={18} /><span>载入已验证的 H3 模板</span></button></div>}

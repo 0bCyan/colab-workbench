@@ -19,8 +19,9 @@ TABLE = "llm_instances"
 
 
 class LLM:
-    def __init__(self, store, colab, profiles):
+    def __init__(self, store, colab, profiles, bundles=None):
         self.store, self.colab, self.profiles = store, colab, {p["id"]: p for p in profiles}
+        self.bundles = bundles
         self.tasks, self.stops, self.locks, self.active = {}, {}, {}, {}
         self.stopping = set()
         self.telemetry = Telemetry(self)
@@ -30,10 +31,30 @@ class LLM:
         if not store.get("meta", "llm_api_key"):
             store.put("meta", "llm_api_key", {"value": secrets.token_urlsafe(32)})
         self.migrate()
+        self.migrate_catalog()
         for item in self.all():
             self.register(item["id"])
             if not item.get("name"):
-                self.machine(item["id"], name=self.default_name(item["config"]["preset_id"], item["id"]), custom_name=False)
+                self.machine(item["id"], name=self.default_name(default_config()['preset_id'], item["id"]), custom_name=False)
+
+    def migrate_catalog(self):
+        current = default_config()['preset_id']
+        old_models = {'qwen27-fp8': 'Qwen/Qwen3.8-27B-FP8',
+                      'flash-iq3': 'ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF',
+                      'qwen27-rana': 'abliterant/Qwen3.8-27B-RANA-abliterated-FP8',
+                      'qwen27-huihui': 'munekazu/Huihui-Qwen3.8-27B-abliterated-FP8'}
+        for item in self.all():
+            if item['config']['preset_id'] == current:
+                continue
+            if item.get('session'):
+                self.store.patch(TABLE, item['id'], retired=True,
+                                 legacy_model=item.get('legacy_model') or old_models.get(item['config']['preset_id'], 'workbench-llm'))
+            else:
+                changes = {'config': default_config(), 'retired': False, 'legacy_model': None, 'deployment': None,
+                           'message': '已切换到已验证的 Strata NVFP4 云盘预设'}
+                if not item.get('custom_name'):
+                    changes['name'] = self.default_name(current, item['id'])
+                self.store.patch(TABLE, item['id'], **changes)
 
     def register(self, key):
         self.locks[key] = asyncio.Lock()
@@ -46,7 +67,8 @@ class LLM:
         records = []
         for item in self.store.all("llm"):
             logs = self.store.get("llm_logs", item["account"], [])
-            if not item.get("session") and item["phase"] == "stopped" and item["config"] == default_config() and not logs:
+            old_default = {"preset_id": "qwen27-fp8", "context_tokens": 262144, "gpu_memory": .9, "cpu_threads": 24}
+            if not item.get("session") and item["phase"] == "stopped" and item["config"] in (default_config(), old_default) and not logs:
                 continue
             key = "svc-" + uuid.uuid4().hex[:12]
             migrated = {**item, "id": key, "created_at": item.get("created_at", time.time()),
@@ -62,7 +84,7 @@ class LLM:
         return sorted(self.store.all(TABLE), key=lambda item: item.get("created_at", 0))
 
     async def open(self):
-        self.http = aiohttp.ClientSession()
+        self.http = aiohttp.ClientSession(json_serialize=lambda value: json.dumps(value, ensure_ascii=False))
         for item in self.all():
             if item.get("session"):
                 self.machine(item["id"], phase="disconnected", port=None, telemetry_port=None, message="服务已重启，请重新连接")
@@ -177,17 +199,22 @@ class LLM:
         validate_config(item["config"])
         if item["phase"] == "ready" and item.get("port"):
             return self.public(key)
+        if hasattr(self.colab, 'validate_connection'):
+            self.colab.validate_connection(self.store.get('settings', 'main')['identity'])
+        if self.bundles:
+            self.bundles.require([preset(item['config']['preset_id'])['bundle_id']])
         if key not in self.tasks or self.tasks[key].done():
             self.machine(key, phase="checking", message="核对此实例的云端会话")
             self.tasks[key] = asyncio.create_task(self.start(key))
         return self.public(key)
 
-    def bootstrap(self, key):
+    def bootstrap(self, key, cloud=None):
         recipe = preset(self.machine(key)["config"]["preset_id"])
-        config = {**self.machine(key)["config"], "recipe": recipe}
+        config = {**self.machine(key)["config"], "recipe": recipe, 'cloud': cloud}
         files = {"deploy.py": (ROOT / "backend/deploy_llm_remote.py").read_bytes(),
                  "telemetry.py": (ROOT / "backend/telemetry_remote.py").read_bytes(),
-                 "config.json": json.dumps(config).encode()}
+                 "config.json": json.dumps(config).encode(),
+                 'bundle_restore_remote.py': (ROOT / 'backend/bundle_restore_remote.py').read_bytes()}
         code = "import base64,subprocess,sys\nfrom pathlib import Path\n" + f"root=Path({LLM_ROOT!r});root.mkdir(exist_ok=True,parents=True)\n"
         for name, data in files.items():
             code += f"(root/{name!r}).write_bytes(base64.b64decode({base64.b64encode(data).decode()!r}))\n"
@@ -245,17 +272,20 @@ class LLM:
                 if key in self.stopping:
                     return
                 self.machine(key, phase="deploying", message="准备模型服务")
+                cloud = self.bundles.lease(key, [preset(item['config']['preset_id'])['bundle_id']]) if self.bundles else None
                 port = await self.colab.tunnel(account, session, self.store.get("settings", "main")["identity"],
-                                               service_port=8000, tunnel_key=key)
+                                               service_port=8000, tunnel_key=key, **({'reverse_port': cloud['local_port']} if cloud else {}))
                 self.machine(key, port=port, telemetry_port=self.colab.telemetry_ports.get(key))
                 try:
                     await self.models(key)
                     self.machine(key, phase="ready", message="服务已重新连接", last_activity=time.time())
+                    if self.bundles:
+                        self.bundles.revoke(key)
                     return
                 except (aiohttp.ClientError, TimeoutError, RuntimeError):
                     pass
                 self.machine(key, legacy_model=None)
-                self.log(key, await self.colab.execute(account, session, self.bootstrap(key)))
+                self.log(key, await self.colab.execute(account, session, self.bootstrap(key, cloud)))
                 check = self.store.directory / f"{key}-llm-check.py"
                 check.write_text("from pathlib import Path\n" + f"root=Path({LLM_ROOT!r})\n"
                                  "p=root/'status.json'\nprint('LLM_STATUS:'+p.read_text() if p.exists() else 'LLM_STATUS:{}')\n"
@@ -272,6 +302,8 @@ class LLM:
                         await self.models(key)
                         self.machine(key, phase="ready", message="服务已就绪", last_activity=time.time())
                         self.log(key, "本地端点已连接")
+                        if self.bundles:
+                            self.bundles.revoke(key)
                         return
                     except (aiohttp.ClientError, TimeoutError, RuntimeError):
                         pass
@@ -326,9 +358,12 @@ class LLM:
                     self.machine(key, phase="stopping", message="释放此实例的机器")
                     await self.colab.stop(item["account"], item["session"])
                 await self.colab.close_tunnel(key)
+                if self.bundles:
+                    self.bundles.revoke(key)
                 self.machine(key, phase="stopped", session=None, port=None, telemetry_port=None, deployment=None,
                              legacy_session=None, legacy_model=None, message="服务已关闭，机器已释放")
                 self.log(key, "此实例的机器已释放")
+                self.migrate_catalog()
             except Exception as exc:
                 self.machine(key, phase="error", message="关机未确认：" + clean(str(exc)))
                 self.log(key, str(exc))

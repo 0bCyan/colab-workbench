@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 
 import pytest
@@ -25,7 +26,7 @@ async def rig(tmp_path):
             yield app.state.llm, fake, client, app.state.manager
 
 
-def create(llm, account='colab2', preset='qwen27-fp8'):
+def create(llm, account='colab2', preset='orca-flash-next-nvfp4-strata-mtp-g4-v1'):
     return llm.create(account, {**default_config(), 'preset_id': preset})['id']
 
 
@@ -56,7 +57,7 @@ async def test_key_protection_offline_and_proxy_allowlist(rig):
     assert not fake.calls
     await start(llm, key)
     assert (await client.get(url, headers=auth(llm))).json()['data'][0]['id'] == llm.model_name(key)
-    assert llm.model_name(key) == 'Qwen/Qwen3.8-27B-FP8'
+    assert llm.model_name(key) == 'orca-flash-next-nvfp4'
     assert (await client.get(f'/llm/{key}/v1/private', headers=auth(llm))).status_code == 404
     assert (await client.get('/llm/absent/v1/models', headers=auth(llm))).status_code == 404
     assert (await client.post(url, headers=auth(llm))).status_code == 404
@@ -66,7 +67,7 @@ async def test_key_protection_offline_and_proxy_allowlist(rig):
 
 async def test_create_config_validates_without_cloud_calls_and_model_identity_follows_recipe(rig):
     llm, fake, client, _ = rig
-    body = {'account': 'colab2', 'config': {**default_config(), 'preset_id': 'flash-iq3', 'context_tokens': 131072}}
+    body = {'account': 'colab2', 'config': {**default_config(), 'preset_id': 'orca-flash-next-nvfp4-strata-mtp-g4-v1', 'context_tokens': 262144}}
     assert (await client.post('/api/llm/instances', json={**body, 'account': 'other'})).status_code == 400
     assert (await client.post('/api/llm/instances', json={**body, 'config': {**body['config'], 'preset_id': 'arbitrary-code'}})).status_code == 400
     assert (await client.post('/api/llm/instances', json={**body, 'config': {**body['config'], 'context_tokens': 999}})).status_code == 422
@@ -74,10 +75,10 @@ async def test_create_config_validates_without_cloud_calls_and_model_identity_fo
     assert created.status_code == 201 and not fake.calls
     item = created.json()
     key, path = item['id'], item['endpoint_path']
-    assert 'Flash-Next' in item['model_name']
-    changed = {'account': 'colab3', 'config': {**default_config(), 'preset_id': 'qwen27-rana'}}
+    assert item['model_name'] == 'orca-flash-next-nvfp4'
+    changed = {'account': 'colab3', 'config': {**default_config(), 'preset_id': 'orca-flash-next-nvfp4-strata-mtp-g4-v1'}}
     result = (await client.put(f'/api/llm/{key}/config', json=changed)).json()
-    assert result['account'] == 'colab3' and 'RANA' in result['model_name']
+    assert result['account'] == 'colab3' and result['model_name'] == 'orca-flash-next-nvfp4'
     assert result['endpoint_path'] == path
     await start(llm, key)
     assert (await client.put(f'/api/llm/{key}/config', json=body)).status_code == 400
@@ -91,7 +92,7 @@ async def test_create_config_validates_without_cloud_calls_and_model_identity_fo
 
 async def test_same_account_multiple_instances_have_independent_models_requests_tunnels_and_stops(rig):
     llm, fake, client, _ = rig
-    first, second = create(llm), create(llm, preset='flash-iq3')
+    first, second = create(llm), create(llm)
     llm.request_start(first)
     llm.request_start(second)
     llm.request_start(first)
@@ -335,11 +336,13 @@ async def test_migrates_live_legacy_sessions_configs_and_logs_without_touching_c
         assert not any(c[1] in {'create', 'exec'} for c in fake.calls)
         llm.request_stop(key)
         await eventually(lambda: llm.machine(key)['phase'] == 'stopped')
-        assert llm.model_name(key) == 'Qwen/Qwen3.8-27B-FP8'
+        assert llm.model_name(key) == 'orca-flash-next-nvfp4'
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group termination; Windows adapter covered separately")
 async def test_real_colab_adapter_isolates_ssh_tunnels_on_the_same_account(tmp_path, monkeypatch):
     import sys
+    from unittest.mock import AsyncMock
 
     from backend.colab import Colab
 
@@ -370,6 +373,7 @@ async def test_real_colab_adapter_isolates_ssh_tunnels_on_the_same_account(tmp_p
     monkeypatch.setattr('backend.colab.asyncio.sleep', no_delay)
     monkeypatch.setattr('backend.colab.os.killpg', lambda pid, _: killed.append(pid))
     driver = Colab(profiles, tmp_path)
+    monkeypatch.setattr(driver, 'wait_tunnel', AsyncMock())
     await driver.tunnel('colab2', 'first', str(identity), service_port=8000, tunnel_key='instance-first')
     await driver.tunnel('colab2', 'second', str(identity), service_port=8000, tunnel_key='instance-second')
     assert len(driver.tunnels) == len(driver.telemetry_ports) == 2 and not killed
@@ -388,9 +392,9 @@ async def test_instance_names_are_separate_from_model_identity_and_can_change_du
     key = result.json()['id']
     first_auto, second_auto = create(llm), create(llm)
     assert llm.machine(first_auto)['name'] != llm.machine(second_auto)['name']
-    llm.configure(key, 'colab2', {**default_config(), 'preset_id': 'qwen27-rana'})
+    llm.configure(key, 'colab2', {**default_config(), 'preset_id': 'orca-flash-next-nvfp4-strata-mtp-g4-v1'})
     assert llm.machine(key)['name'] == '日常助手'
-    llm.configure(first_auto, 'colab2', {**default_config(), 'preset_id': 'flash-iq3'})
+    llm.configure(first_auto, 'colab2', {**default_config(), 'preset_id': 'orca-flash-next-nvfp4-strata-mtp-g4-v1'})
     assert 'Flash-Next' in llm.machine(first_auto)['name']
     await start(llm, key)
     identity = {k: llm.public(key)[k] for k in ('id', 'account', 'session', 'model_name', 'endpoint_path', 'config')}
@@ -409,3 +413,46 @@ async def test_instance_names_are_separate_from_model_identity_and_can_change_du
     assert (await generation).status_code == 200
     assert llm.machine(key)['name'] == '长文分析'
     assert llm.machine(second_auto)['name'] != '长文分析'
+
+
+async def test_catalog_migrates_stopped_instances_and_preserves_running_retired_ownership(tmp_path):
+    from backend.llm import LLM
+
+    store, fake = Store(tmp_path), FakeLLM()
+    store.put('settings', 'main', {'identity': '', 'idle_minutes': 0, 'stop_on_exit': False})
+    store.put('meta', 'install', {'id': 'test-install'})
+    stopped, running = 'svc-stopped', 'svc-running'
+    common = {'account': 'colab2', 'config': {**default_config(), 'preset_id': 'qwen27-rana'},
+              'custom_name': True, 'name': '保留名称', 'created_at': 1}
+    session = 'wbllm-test-install-2-running-owned'
+    store.put('llm_instances', stopped, {**common, 'id': stopped, 'phase': 'stopped', 'session': None})
+    store.put('llm_instances', running, {**common, 'id': running, 'phase': 'ready', 'session': session})
+    fake.active['colab2'].append({'name': session})
+    llm = LLM(store, fake, PROFILES)
+    assert llm.machine(stopped)['config'] == default_config()
+    assert llm.machine(stopped)['name'] == '保留名称'
+    assert llm.machine(running)['session'] == session
+    assert llm.model_name(running) == 'abliterant/Qwen3.8-27B-RANA-abliterated-FP8'
+    assert not fake.calls
+    with pytest.raises(ValueError):
+        llm.request_start(running)
+    llm.request_stop(running)
+    await eventually(lambda: llm.machine(running)['phase'] == 'stopped')
+    assert llm.machine(running)['config'] == default_config()
+    assert not fake.active['colab2']
+    await llm.close()
+    store.close()
+
+
+async def test_old_unconfigured_account_slots_do_not_become_new_instances(tmp_path):
+    from backend.llm import LLM
+
+    store = Store(tmp_path)
+    store.put('settings', 'main', {'stop_on_exit': False})
+    store.put('llm', 'colab2', {'account': 'colab2', 'phase': 'stopped', 'session': None,
+                              'config': {'preset_id': 'qwen27-fp8', 'context_tokens': 262144,
+                                         'gpu_memory': .9, 'cpu_threads': 24}})
+    llm = LLM(store, FakeLLM(), PROFILES)
+    assert llm.all() == []
+    await llm.close()
+    store.close()

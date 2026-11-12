@@ -8,6 +8,11 @@ import traceback
 import urllib.request
 from pathlib import Path
 
+if __package__:
+    from .bundle_restore_remote import prepare_in_parallel, restore
+else:
+    from bundle_restore_remote import prepare_in_parallel, restore
+
 ROOT = Path("/content/colab-workbench")
 COMFY = ROOT / "ComfyUI"
 COMMIT = "4d64a8bc072b81c9b47321789b4d83fb7348ae2a"
@@ -40,6 +45,50 @@ def healthy():
         return None
 
 
+def restore_cloud_weights():
+    import requests
+
+    cloud = json.loads((ROOT / 'bundle-config.json').read_text())
+    key = 'h3-video-g4-v1'
+    response = requests.get(cloud['base'] + '/' + key + '.json', timeout=30)
+    response.raise_for_status()
+    index = response.json()
+    if not index.get('weights_only') or index.get('preset') != key:
+        raise ValueError('需要 H3 视频纯权重部署包')
+    weights = ROOT / 'weights'
+    if not os.path.ismount(weights):
+        available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
+                         if line.startswith('MemAvailable:'))
+        if available < index['total_bytes'] + 30 * 2**30:
+            raise RuntimeError('可用内存不足以容纳 H3 视频权重和推理工作区')
+        weights.mkdir(exist_ok=True)
+        if any(weights.iterdir()):
+            raise RuntimeError('权重目录非空，拒绝覆盖')
+        run(['mount', '-t', 'tmpfs', '-o', 'size=80G', 'workbench-weights', str(weights)])
+    broker = ROOT / 'weight-download-grant.json'
+    try:
+        broker.write_text(json.dumps({**cloud, 'bundle_id': key}))
+        broker.chmod(0o600)
+        restore(broker, ROOT, workers=64)
+    finally:
+        broker.unlink(missing_ok=True)
+    return index['assets']
+
+
+def install_environment():
+    COMFY.mkdir(parents=True, exist_ok=True)
+    if not (COMFY / '.git').exists():
+        run(['git', '-C', str(COMFY), 'init'])
+        run(['git', '-C', str(COMFY), 'remote', 'add', 'origin', 'https://github.com/Comfy-Org/ComfyUI.git'])
+    run(['git', '-C', str(COMFY), 'fetch', '--depth', '1', 'origin', COMMIT])
+    run(['git', '-C', str(COMFY), 'checkout', '--detach', COMMIT])
+    python = ROOT / 'venv/bin/python'
+    if not python.exists():
+        run([sys.executable, '-m', 'venv', '--without-pip', '--system-site-packages', str(ROOT / 'venv')])
+    run([str(python), '-m', 'pip', 'install', '--no-cache-dir', '--disable-pip-version-check',
+         '-r', str(COMFY / 'requirements.txt'), 'huggingface_hub'])
+
+
 def main():
     ROOT.mkdir(parents=True, exist_ok=True)
     # A single deployment owns this directory; retry does not race a previous download.
@@ -60,27 +109,32 @@ def main():
                 raise RuntimeError("此预设需要 Blackwell GPU：请申请 G4 / RTX PRO 6000")
             if int(torch.version.cuda.split('.')[0]) < 13:
                 raise RuntimeError("INT8 ConvRot 预设需要 CUDA 13 的 PyTorch")
-            status("installing", "安装已验证版本的 ComfyUI")
-            # Checkout first; downloads must not create models/ before Git initialization.
-            COMFY.mkdir(parents=True, exist_ok=True)
-            if not (COMFY / ".git").exists():
-                run(["git", "-C", str(COMFY), "init"])
-                run(["git", "-C", str(COMFY), "remote", "add", "origin", "https://github.com/Comfy-Org/ComfyUI.git"])
-            run(["git", "-C", str(COMFY), "fetch", "--depth", "1", "origin", COMMIT])
-            run(["git", "-C", str(COMFY), "checkout", "--detach", COMMIT])
-            python = ROOT / "venv/bin/python"
-            if not python.exists():
-                run([sys.executable, "-m", "venv", "--without-pip", "--system-site-packages", str(ROOT / "venv")])
-            run([str(python), "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check", "-r", str(COMFY / "requirements.txt"), "huggingface_hub"])
+            if (ROOT / 'bundle-config.json').exists():
+                status('downloading', '权重下载到内存，同时安装 ComfyUI 环境')
+                prepare_in_parallel(restore_cloud_weights, install_environment)
+            else:
+                status('installing', '安装已验证版本的 ComfyUI')
+                install_environment()
             # Re-exec into the venv for downloads and serving after the install lock is released.
-            run([str(python), str(ROOT / "deploy_remote.py"), "--download-and-serve"])
+            run([str(ROOT / 'venv/bin/python'), str(ROOT / "deploy_remote.py"), "--download-and-serve"])
         except Exception as exc:
             traceback.print_exc()
             status("error", str(exc))
             raise
 
 
-def download_and_serve():
+def download_models():
+    if (ROOT / 'bundle-config.json').exists():
+        records = restore_cloud_weights()
+        for item in records:
+            target = COMFY / 'models' / item['file']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                target.unlink()
+            if not target.exists():
+                target.symlink_to((ROOT / item['target']).resolve(strict=True))
+        (ROOT / 'assets.json').write_text(json.dumps(records))
+        return records
     from huggingface_hub import hf_hub_download
     records = []
     for index, filename in enumerate(FILES):
@@ -92,6 +146,11 @@ def download_and_serve():
             target.symlink_to(path)
         records.append({"file": filename, "bytes": path.stat().st_size, "revision": REVISION})
     (ROOT / "assets.json").write_text(json.dumps(records))
+    return records
+
+
+def download_and_serve():
+    records = download_models()
     status("starting", "启动 ComfyUI，检查模型加载器")
     with (ROOT / "server.log").open("ab") as log:
         proc = subprocess.Popen([

@@ -70,37 +70,61 @@ macOS 双击项目中的 **`启动工作台.command`**，或在项目目录运�
 
 ## 语言模型服务
 
-侧栏「服务」专门管理 LLM，视频生成仍在「创作」。选择模型与部署账号，设置总上下文（32K / 128K / 256K，包含输入和输出），点击「创建实例」保存配置，或「创建并启动」立即部署。顶部下拉框用于切换已创建实例，「新建实例…」表示尚未保存的新实例配置。可填写「实例名称」，留空时按模型自动命名并编号；已有实例可用名称旁的「保存」重命名，运行中也能操作。自定义实例名独立于模型名称和 API `model` 字段，改名不改变端点、不重启机器。每个实例独立保存模型、账号、会话、隧道、端点、日志及性能数据。「连接测试」和「调用示例」右侧可修改「最大输出」（tokens，默认 4096），立即用于下一次测试请求并更新示例，无需重启服务。该值须小于总上下文；输入与输出共用上下文，输入占用后的实际可用长度由推理引擎校验。此项是调用参数，外部客户端仍可自行传入 `max_tokens`。运行期间锁定配置，更换模型或账号前先关闭该实例；已释放机器的实例可删除。
+侧栏「服务」管理 LLM，H3 视频继续在「创作」。当前只保留已验证的 **Flash-Next Uncensored · NVFP4 · Strata MTP4**，取代旧的 27B / RANA / Huihui / IQ3 配方。目标专家为 NVFP4，dense 为 Q8_0，PLE 保留完整 FP8；不是全模型 BF16。
 
-| 初始预设 | 引擎 | 权重量化 | 状态 |
-| --- | --- | --- | --- |
-| [Qwen3.8 27B](https://huggingface.co/Qwen/Qwen3.8-27B-FP8) | vLLM | FP8 | 待实机验收 |
-| [Qwen3.8 27B RANA](https://huggingface.co/abliterant/Qwen3.8-27B-RANA-abliterated-FP8) | vLLM | FP8，减少拒答的社区版本 | 待实机验收 |
-| [Qwen3.8 27B Huihui](https://huggingface.co/munekazu/Huihui-Qwen3.8-27B-abliterated-FP8) | vLLM | FP8，减少拒答的社区版本 | 待实机验收 |
-| [Qwen3.8 Flash-Next GSQ-RCO](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) | llama.cpp | IQ3_S GGUF | 待实机验收 |
+| 项目 | 当前配方 |
+| --- | --- |
+| 模型 | `jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4` |
+| 固定 revision | `f24d2b68ff2814f24455ae86717be276619b5664` |
+| 引擎 | Strata，原生 MTP4 |
+| 总上下文 | 256K，输入与输出共享 |
+| CPU 并行度 | `OMP_NUM_THREADS=12` |
+| 完整部署包 | 七个文件，约 119.46 GiB，包含完整 PLE |
+| 可用内存要求 | 至少 155 GiB，使用 145 GiB 独立 tmpfs 与 mmap-experts |
+| API model | `orca-flash-next-nvfp4` |
 
-每个模型在 `templates/llm/<预设ID>.json` 中定义模型名称、权重 revision、量化方式、部署引擎和版本，`backend/llm_presets.py` 负责读取与校验。页面根据模型自动匹配框架，不再提供独立引擎选择。它们是用于后续验收的部署配方，不代表已在 G4 上通过加载、长上下文、质量或速度测试；界面不展示未经实测的速度。当前不接受任意仓库、远端代码或 shell 参数。vLLM 可设置显存预算，llama.cpp 可设置 CPU 线程数；当前都是单路生成。
+12 是已验证配方中的 OpenMP 并行度，不是虚拟机只有 12 个 vCPU，也不代表已经完成不同线程数的最优比较。配方参数暂时固定；模型与引擎随预设配置，不再手动组合。
 
-**连接方式：** 本机调用方 → 本机 FastAPI 端点 → 该实例专属 SSH 隧道 → Colab 的 `127.0.0.1:8000` → vLLM / llama-server。远端环境在独立的 `/content/colab-workbench-llm` 中，首次启动才安装依赖并下载模型，不改 ComfyUI 的环境。模型仍保存在 Colab 临时磁盘，不上传到本机仓库。
+1. 选择部署账号，填写可选实例名称。「创建实例」仅保存；「创建并启动」才申请 G4、并行准备环境和权重。
+2. 每个实例拥有独立机器、隧道、端点、日志及性能数据。同一账号可以新建多个实例，实际并发上限由 Colab 决定；账号内其他会话不会被接管或停止。
+3. 实例名称可以随时保存修改。重命名不改变实例 ID、端点或模型。已有旧配方实例在停止状态下迁移到当前配方；自定义名称、API 密钥、历史记录和实例端点保留。若旧实例仍有运行会话，保留原模型身份和关闭权限，释放后迁移。
+4. 服务就绪后，可复制端点、密钥，或发送流式连接测试。「最大输出」在运行期间可修改，默认 4096 tokens，立即影响下一次测试和调用示例；外部客户端仍通过 `max_tokens` 指定。
+5. 单实例同一时间处理一路请求；生成期间禁止释放。停止生成只取消当前请求。「关闭服务并释放机器」结束该实例的计算资源，关闭后端点返回 503；不会自动切换实例或重新开机。
 
-每个实例的端点固定为 `http://127.0.0.1:8765/llm/<实例ID>/v1`，API 的 `model` 字段使用所选模型配置中的 `model_name`，通常为完整模型仓库名。例如启动 Qwen3.8 27B FP8 后，将下方示例中的 `svc-example` 换成实际实例 ID，并将复制的密钥设为环境变量：
+端点固定为 `http://127.0.0.1:8765/llm/<实例ID>/v1`。连接方式是本地调用方 → FastAPI → 实例专属 SSH 隧道 → Colab 的 Strata 服务。调用示例：
 
-```bash
-curl http://127.0.0.1:8765/llm/svc-example/v1/chat/completions \
-  -H "Authorization: Bearer $WORKBENCH_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"Qwen/Qwen3.8-27B-FP8","messages":[{"role":"user","content":"你好"}],"stream":true}'
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:8765/llm/<实例ID>/v1",
+    api_key=os.environ["WORKBENCH_API_KEY"],
+)
+response = client.chat.completions.create(
+    model="orca-flash-next-nvfp4",
+    messages=[{"role": "user", "content": "你好"}],
+    max_tokens=4096,
+)
+print(response.choices[0].message.content)
 ```
 
-OpenAI 兼容客户端填写该实例的完整 `/v1` 地址、工作台服务密钥和模型名即可。支持 `GET /models`、`POST /chat/completions`、`POST /completions` 及流式响应；暂不提供 embeddings、文件上传或云端管理接口。服务密钥是本地生成的应用密钥，与 Google 登录凭证无关。它保存在 `.data/`，只在用户点击复制或发送连接测试时取出，不进入常规状态响应、浏览器本地存储或日志。修改 Google 账号或切换页面账号不改变该密钥。
+支持 `/models`、`/chat/completions`、`/completions` 及流式响应。端点仅监听本机。服务密钥与 Google 登录凭证无关，保存在 `.data/`，不进入常规状态响应、浏览器本地存储或日志。重新打开工作台不自动申请 GPU；退出释放和空闲关机设置同时适用于视频和 LLM。
 
-- 切换实例仅切换管理视图。已有客户端继续调用原实例的端点，关闭后返回 503，不会自动切到另一个实例或自动开机。模型名称与调用示例随所选模型更新，不使用统一的固定模型别名。
-- 同一账号可以运行多个 LLM 实例，也可同时运行独立的视频机器。工作台不设“一账号一台”的限制；实际能申请多少台由 Colab 的额度、并发配额和当时资源决定。申请失败时显示错误；确认未分配机器后，可为该实例更换账号再试。存在其他会话不会阻止申请，也不会接管或停止这些会话。
-- 每次分配先记录专属 `wbllm-<安装ID>-<账号编号>-<实例ID>-<随机ID>` 会话名，连接与停止时验证归属。重复启动复用当前操作；分配途中关闭会等待结果，再释放这台机器。失败仍保留关机入口。
-- 单实例最多一个生成请求；额外请求返回 409。生成期间禁止关闭，空闲计时从请求结束开始。测试区的「停止生成」断开该请求，不释放机器。
-- 不同实例可独立生成，即使它们使用相同账号与模型。关闭服务只释放该实例对应的 Colab 机器；重新打开本地工作台只显示等待重连，不自动重建或申请 GPU。「退出时释放机器」和空闲关机设置同时适用于视频与 LLM 服务。
-- 升级旧版时，已有配置、日志和运行中的会话会迁移为独立实例，不自动重新部署。旧账号路径继续指向原实例；若旧会话仍使用原别名，会保留到手动关闭，下一次启动再使用模型自身名称。没有修改或启动过的默认账号槽位不生成空实例。
-- 所有端点仍只监听本机。调用需 `Authorization: Bearer ...`；其他站点的浏览器请求被同源检查拒绝。需要保留本地后台运行才能调用。
+## 云盘权重与并行初始化
+
+原版 Fieldwork 仅提供 LLM 和 H3 视频两条部署路线。两者都已接入私有云盘权重清单：模型字节由云盘直接进入 Colab 的内存文件系统，本机只保留小型索引和控制数据。环境不制作成 Python 镜像；H3 在下载时安装 ComfyUI，LLM 在引擎/脚本归档恢复后安装轻量 Python 依赖，同时继续下载权重。
+
+下载通过现有 SSH 通道提供临时只读授权，不公开下载代理，不把长期云盘刷新凭证发送到 GPU。最多 64 路有界 Range 下载，逐文件完整 SHA256 校验，通过后才提交可加载文件。LLM 直接读取完整 PLE，不重组分片；H3 的四个权重也直接恢复到独立 tmpfs。内存不足、缺少索引或授权时明确报错；本地配置检查在申请 GPU 之前执行。
+
+私有索引保存在 `.data/cloud/`，实际云盘文件 ID、账号授权和模型不随代码发布。首次安装可导入自己已校验的索引：
+
+```sh
+uv run python scripts/import_bundle.py /path/to/orca-flash-next-nvfp4-strata-mtp-g4-v1.json
+uv run python scripts/import_bundle.py /path/to/h3-video-g4-v1.json
+```
+
+还需 rclone 独立的 `reader` remote，使用 `scope = drive.readonly`；默认授权文件为用户目录下 `.local/share/llm-workbench/drive-reader.conf`。可通过 `WORKBENCH_DRIVE_READER`、`WORKBENCH_RCLONE` 覆盖位置。Colab CLI 登录与云盘读取授权分别管理。清单导入及模型设置不会申请机器。
 
 ## 作品管理与性能看板
 
@@ -135,7 +159,7 @@ OpenAI 兼容客户端填写该实例的完整 `/v1` 地址、工作台服务密
 | 采样 | `res_multistep` / `simple`，video/audio shift 12/3 |
 | 加速 LoRA | 无 |
 
-部署检查 Blackwell 和 CUDA 13；不满足要求时停止部署并保留明确的关机入口。模型合计约 40 GB，每台新机器都要重新下载。释放 Colab 会话会清除远端 `/content`；本地视频、草稿和任务记录保留。当前未配置 Drive 或其他持久云盘缓存。
+部署检查 Blackwell 和 CUDA 13；不满足要求时停止部署并保留明确的关机入口。模型合计约 40 GB，每台新机器从已验证的私有云盘恢复到内存，并与环境配置并行。释放 Colab 会话会清除远端 `/content`；本地视频、草稿和任务记录保留。默认使用 `h3-video-g4-v1` 私有云盘权重清单，不再等待环境安装完再从 Hugging Face 下载。
 
 仓库仅提供程序生成的测试视频 `tests/fixtures/synthetic.mp4`，不包含真实作品、截图或账号数据。新打开的工作台显示空白预览；历史成片保存在本机，可从「作品」主动预览。
 
@@ -161,7 +185,7 @@ backend/
   manager.py        账号隔离、部署、任务队列、恢复、关闭机器
   llm.py            独立 LLM 会话、配置、健康检查、单路请求与释放
   llm_presets.py    固定版本的模型与引擎预设
-  deploy_llm_remote.py  独立 vLLM / llama.cpp 安装、下载与服务启动
+  deploy_llm_remote.py  Strata 完整权重内存恢复、环境并行配置与服务启动
   colab.py          调用现有 Colab CLI，建立受控 SSH 隧道
   bridge.py         保留多账号上下文、禁用 SSH 隐式开机
   deploy_remote.py  固定版本远端安装与下载

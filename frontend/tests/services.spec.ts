@@ -21,11 +21,11 @@ test('models choose their runtime and multiple instances on one account keep sep
   await expect(page.getByRole('button', { name: '视频生成', exact: true })).toHaveCount(0)
   await expect(page.getByLabel('部署引擎')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '复制端点', exact: true })).toBeDisabled()
-  await page.getByRole('button', { name: /Qwen3.8 · Flash-Next/ }).click()
-  await expect(page.getByRole('heading', { name: 'Qwen3.8 · Flash-Next', exact: true })).toBeVisible()
-  await expect(page.getByLabel('CPU 线程')).toBeVisible()
-  await expect(page.locator('.service-runtime')).toContainText('llama.cpp')
-  await expect(page.locator('.endpoint-details')).toContainText('ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF')
+  await page.getByRole('button', { name: /Flash-Next Uncensored · Strata MTP/ }).click()
+  await expect(page.getByRole('heading', { name: 'Flash-Next Uncensored · Strata MTP', exact: true })).toBeVisible()
+  await expect(page.getByLabel('MTP 与 CPU 并行线程')).toBeVisible()
+  await expect(page.locator('.service-runtime')).toContainText('Strata')
+  await expect(page.locator('.endpoint-details')).toContainText('orca-flash-next-nvfp4')
   await page.getByLabel('服务账号', { exact: true }).selectOption('colab1')
   await expect(page.getByLabel('服务实例', { exact: true }).locator('option:checked')).toHaveText('新建实例…')
   await page.getByLabel('实例名称', { exact: true }).fill('日常助手')
@@ -38,21 +38,22 @@ test('models choose their runtime and multiple instances on one account keep sep
   expect(state.llm.services).toHaveLength(1)
   expect(state.llm.services[0].session).toBeNull()
   expect(state.llm.services[0].name).toBe('日常助手')
-  await page.getByRole('button', { name: /Qwen3.8 · 27B RANA/ }).click()
-  await expect(page.getByRole('heading', { name: 'Qwen3.8 · 27B RANA', exact: true })).toBeVisible()
-  await expect(page.getByLabel('显存预算')).toBeVisible()
-  await expect(page.locator('.service-runtime')).toContainText('vLLM')
-  await page.getByLabel('总上下文').selectOption('131072')
+  await page.getByRole('button', { name: /Flash-Next Uncensored · Strata MTP/ }).click()
+  await expect(page.getByRole('heading', { name: 'Flash-Next Uncensored · Strata MTP', exact: true })).toBeVisible()
+  await expect(page.getByLabel('MTP 与 CPU 并行线程')).toBeVisible()
+  await expect(page.locator('.service-runtime')).toContainText('Strata')
+  await expect(page.getByLabel('总上下文')).toHaveValue('256K')
+  await expect(page.getByLabel('MTP 与 CPU 并行线程')).toHaveValue('4 / 12')
   await page.getByRole('button', { name: '启动服务', exact: true }).click()
   await expect(page.getByText('服务已启动', { exact: true })).toBeVisible({ timeout: 15000 })
-  await expect(page.getByLabel('总上下文')).toBeDisabled()
+  await expect(page.getByLabel('总上下文')).toHaveAttribute('readonly', '')
   await expect(page.getByLabel('服务账号', { exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: '删除实例', exact: true })).toBeDisabled()
   await expect(page.getByLabel('GPU占用率')).toContainText('85%')
   await page.getByLabel('实例名称', { exact: true }).fill('长文分析')
   await page.getByRole('button', { name: '保存实例名称', exact: true }).click()
   await expect(page.getByLabel('服务实例', { exact: true }).locator('option:checked')).toContainText('长文分析')
-  await expect(page.getByRole('heading', { name: 'Qwen3.8 · 27B RANA', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Flash-Next Uncensored · Strata MTP', exact: true })).toBeVisible()
   await page.reload()
   await page.getByRole('button', { name: '模型服务', exact: true }).click()
   await expect(page.getByLabel('实例名称', { exact: true })).toHaveValue('长文分析')
@@ -68,7 +69,7 @@ test('models choose their runtime and multiple instances on one account keep sep
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(key)
   const outputLimit = page.getByLabel('最大输出', { exact: true })
   await expect(outputLimit).toBeEnabled()
-  for (const invalid of ['', '0', '1.5', '131072']) {
+  for (const invalid of ['', '0', '1.5', '262144']) {
     await outputLimit.fill(invalid)
     await expect(outputLimit).toHaveAttribute('aria-invalid', 'true')
     await expect(page.getByRole('button', { name: '发送测试', exact: true })).toBeDisabled()
@@ -81,7 +82,7 @@ test('models choose their runtime and multiple instances on one account keep sep
   await expect(page.getByLabel('测试响应')).toContainText(`来自 ${first} 的测试服务。`)
   await expect(page.getByRole('button', { name: '发送测试', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: '调用示例', exact: true }).click()
-  const firstModel = 'abliterant/Qwen3.8-27B-RANA-abliterated-FP8'
+  const firstModel = 'orca-flash-next-nvfp4'
   await expect(page.locator('.service-example')).toContainText(firstModel)
   await expect(page.locator('.service-example')).toContainText('"max_tokens":8192')
   await outputLimit.fill('16384')
@@ -89,7 +90,7 @@ test('models choose their runtime and multiple instances on one account keep sep
   await expect(page.locator('.service-example')).toContainText(`${endpoint}/chat/completions`)
   await page.getByRole('button', { name: '新建实例', exact: true }).click()
   await page.getByLabel('服务账号', { exact: true }).selectOption('colab1')
-  await page.getByRole('button', { name: /Qwen3.8 · 27B Huihui/ }).click()
+  await page.getByRole('button', { name: /Flash-Next Uncensored · Strata MTP/ }).click()
   await page.getByRole('button', { name: '创建并启动', exact: true }).click()
   await expect(page.getByText('服务已启动', { exact: true })).toBeVisible({ timeout: 15000 })
   const second = await page.getByLabel('服务实例', { exact: true }).inputValue()
@@ -154,7 +155,7 @@ test('instance layout fits desktop and small screens, with zero or many accounts
     state.llm.services = []
     if (count) state.llm.services = Array.from({ length: count }, (_, i) => ({
       id: `svc-demo${i + 1}`, account: count === 1 ? 'colab99' : 'colab12', phase: 'stopped', session: null, message: '按需启动服务',
-      config: { preset_id: 'qwen27-fp8', context_tokens: 262144, gpu_memory: .9, cpu_threads: 24 },
+      config: { preset_id: 'orca-flash-next-nvfp4-strata-mtp-g4-v1', context_tokens: 262144, gpu_memory: .9, cpu_threads: 12 },
       endpoint_path: `/llm/svc-demo${i + 1}/v1`, model_name: state.llm.presets[0].model_name, active_requests: 0,
     }))
     await route.fulfill({ json: state })

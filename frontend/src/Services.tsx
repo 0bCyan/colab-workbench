@@ -14,7 +14,7 @@ type Props = {
   openSettings: () => void
 }
 
-const defaults: LLMConfig = { preset_id: 'qwen27-fp8', context_tokens: 262144, gpu_memory: .9, cpu_threads: 24 }
+const defaults: LLMConfig = { preset_id: 'orca-flash-next-nvfp4-strata-mtp-g4-v1', context_tokens: 262144, gpu_memory: .9, cpu_threads: 12 }
 const busyPhases = new Set(['checking', 'provisioning', 'deploying', 'stopping'])
 
 export default function Services({ state, account: defaultAccount, request, refresh, notify, openSettings }: Props) {
@@ -153,9 +153,8 @@ export default function Services({ state, account: defaultAccount, request, refr
             <span><strong>{p.name}</strong><Check size={14} /></span><small>{p.engine === 'vllm' ? 'vLLM' : p.engine} · {p.quantization}<i>{p.reduced_refusal ? '少拒答' : p.tier}</i></small>
           </button>)}</div>
           {!presets.length && <p className="service-hint">请重启本地服务以加载模型预设</p>}
-          <div className="service-options"><label className="field"><span>总上下文</span><select aria-label="总上下文" disabled={locked} value={config.context_tokens} onChange={e => setConfig({ ...config, context_tokens: Number(e.target.value) })}><option value={32768}>32K</option><option value={131072}>128K</option><option value={262144}>256K</option></select></label>
-            <label className="field"><span>{recipe?.engine === 'llama.cpp' ? 'CPU 线程' : '显存预算'}</span>{recipe?.engine === 'llama.cpp' ? <select aria-label="CPU 线程" disabled={locked} value={config.cpu_threads} onChange={e => setConfig({ ...config, cpu_threads: Number(e.target.value) })}>{[8, 16, 24, 48].map(n => <option key={n} value={n}>{n}</option>)}</select> : <select aria-label="显存预算" disabled={locked} value={config.gpu_memory} onChange={e => setConfig({ ...config, gpu_memory: Number(e.target.value) })}>{[.8, .9, .95].map(n => <option key={n} value={n}>{Math.round(n * 100)}%</option>)}</select>}</label></div>
-          <div className="service-runtime"><Cpu size={13} /><span>{recipe?.engine === 'vllm' ? 'vLLM' : recipe?.engine}</span><small>随模型自动配置</small></div><p className="service-hint">单实例单路 · 含输入与输出 · 待实机验收</p>
+          <div className="service-options"><label className="field"><span>总上下文</span><input aria-label="总上下文" value={`${config.context_tokens / 1024}K`} readOnly /></label><label className="field"><span>MTP / CPU 并行线程</span><input aria-label="MTP 与 CPU 并行线程" value={`4 / ${config.cpu_threads}`} readOnly /></label></div>
+          <div className="service-runtime"><Cpu size={13} /><span>{recipe?.engine === 'vllm' ? 'vLLM' : recipe?.engine}</span><small>随模型自动配置</small></div><p className="service-hint">单实例单路 · 权重直载内存 · 配方已验证</p>
         </div>
         <footer className="service-config-footer"><span>{recipe ? `权重约 ${recipe.size_gib.toFixed(1)} GiB` : '未选择模型'}</span><button className="text-button" disabled={locked || !available || !!service && !dirty && !nameDirty} onClick={() => act('save', async () => { if (service) { await save(); notify('部署配置已保存') } else await createInstance() })}>{pending === 'save' ? '保存中…' : service ? '保存配置' : '创建实例'}<ChevronRight size={13} /></button></footer>
       </section>

@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .bundles import Bundles
 from .colab import Colab, clean
 from .config import COMFY_COMMIT, DATA, MODEL_FILES, MODEL_REVISION, ROOT, profiles
 from .library import Library
@@ -62,7 +63,7 @@ class LLMConfig(BaseModel):
     preset_id: str
     context_tokens: Literal[32768, 131072, 262144] = 262144
     gpu_memory: Literal[0.8, 0.9, 0.95] = 0.9
-    cpu_threads: Literal[8, 16, 24, 48] = 24
+    cpu_threads: Literal[8, 12, 16, 24, 48] = 12
 
 
 class LLMDeployment(BaseModel):
@@ -98,8 +99,12 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 machine["account"] for machine in store.all("machines") + store.all("llm") + store.all("llm_instances") if machine.get("session")
             )
             colab = driver or Colab(account_profiles, directory)
-            manager = Manager(store, colab, account_profiles)
-            llm = LLM(store, llm_driver or driver or Colab(account_profiles, directory), account_profiles)
+            bundles = Bundles(directory)
+            await bundles.open()
+            manager = Manager(store, colab, account_profiles, bundles=None if getattr(colab, 'simulated', False) else bundles)
+            llm_colab = llm_driver or driver or Colab(account_profiles, directory)
+            llm = LLM(store, llm_colab, account_profiles, bundles=None if getattr(llm_colab, 'simulated', False) else bundles)
+            app.state.bundles = bundles
             app.state.store, app.state.manager = store, manager
             app.state.llm = llm
             await manager.open()
@@ -109,6 +114,7 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
             finally:
                 await llm.close()
                 await manager.close()
+                await bundles.close()
                 store.close()
 
     app = FastAPI(title="Colab Workbench", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -176,6 +182,7 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
         jobs = [{k: v for k, v in j.items() if k not in {"graph", "history"}} for j in jobs]
         return {"token": token, "accounts": accounts, "jobs": jobs,
                 "llm": {"presets": PRESETS, "services": [app.state.llm.public(item["id"]) for item in app.state.llm.all()]},
+                "bundles": app.state.bundles.public(),
                 "settings": store().get("settings", "main"),
                 "drafts": [{k: v for k, v in d.items() if k not in {"graph", "positions"}} for d in store().all("drafts")],
                 "preset": {"comfy_commit": COMFY_COMMIT, "model_revision": MODEL_REVISION, "models": MODEL_FILES}}

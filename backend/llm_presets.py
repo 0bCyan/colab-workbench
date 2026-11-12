@@ -19,17 +19,17 @@ def preset(key):
 
 
 def default_config():
-    return {"preset_id": "qwen27-fp8", "context_tokens": 262144, "gpu_memory": 0.90, "cpu_threads": 24}
+    return {"preset_id": PRESETS[0]['id'], "context_tokens": 262144, "gpu_memory": 0.90, "cpu_threads": 12}
 
 
 def validate_config(value):
     recipe = preset(value["preset_id"])
     if not recipe["revision"]:
         raise ValueError("该预设尚未固定模型版本")
-    if value["context_tokens"] not in (32768, 131072, 262144):
-        raise ValueError("请选择 32K、128K 或 256K 总上下文")
+    if value["context_tokens"] != recipe['context_tokens']:
+        raise ValueError("当前验证版本使用 256K 总上下文")
     if value["gpu_memory"] not in (0.8, 0.9, 0.95):
         raise ValueError("显存预算无效")
-    if value["cpu_threads"] not in (8, 16, 24, 48):
-        raise ValueError("CPU 线程数无效")
+    if value["cpu_threads"] != recipe['cpu_threads']:
+        raise ValueError("当前验证版本固定使用 12 个 CPU 线程")
     return value

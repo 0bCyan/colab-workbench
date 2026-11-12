@@ -17,8 +17,9 @@ ACTIVE = {"pending", "preparing", "submitting", "queued", "running", "downloadin
 
 
 class Manager:
-    def __init__(self, store, colab, profiles):
+    def __init__(self, store, colab, profiles, bundles=None):
         self.store, self.colab, self.profiles = store, colab, profiles
+        self.bundles = bundles
         self.locks = {p["id"]: asyncio.Lock() for p in profiles}
         self.start_tasks, self.stop_tasks, self.workers = {}, {}, {}
         self.stopping = set()
@@ -75,6 +76,11 @@ class Manager:
             return self.store.get("accounts", account)
 
     def request_start(self, account):
+        self.machine(account)
+        if hasattr(self.colab, 'validate_connection'):
+            self.colab.validate_connection(self.store.get('settings', 'main')['identity'])
+        if self.bundles:
+            self.bundles.require(['h3-video-g4-v1'])
         if account in self.stopping:
             raise ValueError("机器正在停止，请稍候")
         if account not in self.start_tasks or self.start_tasks[account].done():
@@ -119,21 +125,25 @@ class Manager:
                     self.log(account, f"额度刷新暂时失败，部署继续：{exc}")
                 deploy = (ROOT / "backend/deploy_remote.py").read_bytes()
                 telemetry = (ROOT / "backend/telemetry_remote.py").read_bytes()
+                cloud = self.bundles.lease(account, ['h3-video-g4-v1']) if self.bundles else None
                 bootstrap = self.store.directory / f"{account}-bootstrap.py"
                 bootstrap.write_text(
                     "import base64, subprocess, sys\nfrom pathlib import Path\n"
                     f"root=Path({REMOTE_ROOT!r}); root.mkdir(parents=True,exist_ok=True)\n"
                     f"(root/'deploy_remote.py').write_bytes(base64.b64decode({base64.b64encode(deploy).decode()!r}))\n"
                     f"(root/'telemetry_remote.py').write_bytes(base64.b64decode({base64.b64encode(telemetry).decode()!r}))\n"
+                    + (f"(root/'bundle_restore_remote.py').write_bytes(base64.b64decode({base64.b64encode((ROOT / 'backend/bundle_restore_remote.py').read_bytes()).decode()!r}))\n"
+                       f"(root/'bundle-config.json').write_text({json.dumps(cloud)!r})\n" if cloud else '') +
                     "with (root/'telemetry.log').open('ab') as log:\n"
                     " subprocess.Popen([sys.executable,str(root/'telemetry_remote.py')],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)\n"
                     "with (root/'deploy.log').open('ab') as log:\n"
                     " p=subprocess.Popen([sys.executable,str(root/'deploy_remote.py')],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)\n"
                     "print('Deployment started',p.pid)\n"
                 )
-                self.log(account, await self.colab.execute(account, session, bootstrap))
-                port = await self.colab.tunnel(account, session, self.store.get("settings", "main")["identity"])
+                port = await self.colab.tunnel(account, session, self.store.get("settings", "main")["identity"],
+                                               **({'reverse_port': cloud['local_port']} if cloud else {}))
                 self.machine(account, port=port, telemetry_port=self.colab.telemetry_ports.get(account))
+                self.log(account, await self.colab.execute(account, session, bootstrap))
                 check = self.store.directory / f"{account}-check.py"
                 check.write_text(
                     "from pathlib import Path\nimport json\n"
@@ -418,6 +428,8 @@ class Manager:
                 self.machine(account, phase="stopping", message="释放 Colab 会话并核对状态")
                 await self.colab.stop(account, session)
                 await self.colab.close_tunnel(account)
+                if self.bundles:
+                    self.bundles.revoke(account)
                 for job in self.active_jobs(account):
                     self.job(job["id"], status="cancelled", message="机器已关闭", ended_at=time.time())
                 self.machine(account, phase="stopped", session=None, port=None, message="机器已释放，停止计费")

@@ -1,0 +1,20 @@
+{
+  "id": "orca-flash-next-nvfp4-strata-mtp-g4-v1",
+  "bundle_id": "orca-flash-next-nvfp4-strata-mtp-g4-v1",
+  "name": "Flash-Next Uncensored · Strata MTP",
+  "engine": "Strata",
+  "quantization": "NVFP4",
+  "model": "jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4",
+  "revision": "f24d2b68ff2814f24455ae86717be276619b5664",
+  "model_name": "orca-flash-next-nvfp4",
+  "engine_version": "bundle-v1",
+  "size_gib": 119.456,
+  "tier": "已验证",
+  "reduced_refusal": true,
+  "order": 0,
+  "context_tokens": 262144,
+  "cpu_threads": 12,
+  "minimum_available_ram_gib": 155,
+  "restore_workers": 64,
+  "validation": "完整 PLE 路线 G4 STANDARD 冷启动约 256 秒；128K 检索与续聊通过"
+}

@@ -11,6 +11,8 @@ PROFILES = [{"id": f"colab{i}", "label": f"账号 {i}", "launcher": "/test/fake"
 
 
 class FakeColab:
+    simulated = True
+
     def __init__(self, delay=0.2):
         self.delay = delay
         self.calls = []

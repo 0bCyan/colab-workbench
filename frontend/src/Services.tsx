@@ -33,6 +33,7 @@ export default function Services({ state, account: defaultAccount, request, refr
   const [tab, setTab] = useState<'test' | 'example'>('test')
   const [mobile, setMobile] = useState<'config' | 'endpoint' | 'compute'>('endpoint')
   const [prompt, setPrompt] = useState('用一句话介绍自己。')
+  const [outputLimits, setOutputLimits] = useState<Record<string, string>>({})
   const [answer, setAnswer] = useState('')
   const [reasoning, setReasoning] = useState('')
   const [testing, setTesting] = useState(false)
@@ -69,10 +70,16 @@ export default function Services({ state, account: defaultAccount, request, refr
   const available = !!profile?.installed && !!profile.credential_present
   const dirty = savedDeployment !== JSON.stringify({ account, config })
   const nameDirty = !!service && !!name.trim() && name.trim() !== service.name
+  const outputKey = selected || 'new'
+  const outputText = outputLimits[outputKey] ?? '4096'
+  const maxOutput = Number(outputText)
+  const maxOutputAllowed = (service?.session ? service.config.context_tokens : config.context_tokens) - 1
+  const outputValid = outputText.trim() !== '' && Number.isSafeInteger(maxOutput) && maxOutput >= 1 && maxOutput <= maxOutputAllowed
+  const outputError = `最大输出须为 1–${maxOutputAllowed.toLocaleString()} 的整数；输入和输出共用上下文。`
   const endpoint = service ? `${location.origin}${service.endpoint_path}` : ''
   const servedModel = service && !dirty ? service.model_name : recipe?.model_name ?? ''
   const runningInstances = services.filter(s => s.account === account && s.session).length
-  const curl = `curl '${endpoint}/chat/completions' \\\n  -H "Authorization: Bearer $WORKBENCH_API_KEY" \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: '你好' }], stream: true })}'`
+  const curl = `curl '${endpoint}/chat/completions' \\\n  -H "Authorization: Bearer $WORKBENCH_API_KEY" \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: '你好' }], max_tokens: outputValid ? maxOutput : undefined, stream: true })}'`
 
   async function act(label: string, task: () => Promise<unknown>) {
     const target = selected
@@ -93,12 +100,14 @@ export default function Services({ state, account: defaultAccount, request, refr
   }
   async function createInstance(start = false) {
     const item = await request<LLMService>('/llm/instances', 'POST', { account, config, name: name.trim() || undefined })
+    setOutputLimits(previous => ({ ...previous, [item.id]: outputText }))
     await refresh(); setSelected(item.id)
     if (start) await request(`/llm/${item.id}/start`, 'POST')
     else notify('服务实例已创建')
   }
   async function test() {
     if (!prompt.trim() || !ready || testing) return
+    if (!outputValid) { setError(outputError); return }
     const turn = ++serial.current
     const abort = new AbortController()
     controller.current = abort
@@ -108,7 +117,7 @@ export default function Services({ state, account: defaultAccount, request, refr
       if (abort.signal.aborted) return
       const response = await fetch(`${endpoint}/chat/completions`, { method: 'POST', signal: abort.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: prompt }], max_tokens: 512, stream: true }) })
+        body: JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: prompt }], max_tokens: maxOutput, stream: true }) })
       if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.error?.message ?? data.detail ?? '测试请求失败') }
       if (!response.body) throw new Error('浏览器不支持流式响应')
       const reader = response.body.getReader(), decoder = new TextDecoder()
@@ -158,10 +167,11 @@ export default function Services({ state, account: defaultAccount, request, refr
             <div className="endpoint-details"><span title={servedModel}>模型 <code>{servedModel}</code></span><button className="text-button" aria-label="复制服务密钥" disabled={!service || !!pending} onClick={copyKey}><KeyRound size={13} />{copied === '密钥' ? '密钥已复制' : '复制密钥'}</button></div>
             <p className="service-hint">{service ? `独立端点 · ${service.account} · ${service.id.slice(-4)}` : '每个实例独立部署、独立调用'}</p>
           </div></div>
-        <div className="panel service-test"><header className="stage-heading"><div className="segmented"><button className={tab === 'test' ? 'active' : ''} onClick={() => setTab('test')}>连接测试</button><button className={tab === 'example' ? 'active' : ''} onClick={() => setTab('example')}>调用示例</button></div><span className="subtle">{testing ? '生成中' : '单路服务'}</span></header>
-          {tab === 'example' ? <div className="service-example"><div><span>将密钥设置为 WORKBENCH_API_KEY</span><button className="icon-button" aria-label="复制调用示例" disabled={!endpoint} onClick={() => copy('调用示例', curl)}><Copy size={14} /></button></div><pre>{curl}</pre></div> : <>
+        <div className="panel service-test"><header className="stage-heading"><div className="segmented"><button className={tab === 'test' ? 'active' : ''} onClick={() => setTab('test')}>连接测试</button><button className={tab === 'example' ? 'active' : ''} onClick={() => setTab('example')}>调用示例</button></div><label className="service-output-limit" title="最大生成 token 数；输入和输出共用上下文，可在服务运行时修改。"><span>最大输出</span><input aria-label="最大输出" type="number" inputMode="numeric" min={1} max={maxOutputAllowed} step={1} value={outputText} disabled={testing} aria-invalid={!outputValid} onChange={e => { const value = e.target.value; setOutputLimits(previous => ({ ...previous, [outputKey]: value })); setError('') }} /><small>tokens</small></label></header>
+          {!outputValid && <div className="service-limit-error" role="alert">{outputError}</div>}
+          {tab === 'example' ? <div className="service-example"><div><span>将密钥设置为 WORKBENCH_API_KEY</span><button className="icon-button" aria-label="复制调用示例" disabled={!endpoint || !outputValid} onClick={() => copy('调用示例', curl)}><Copy size={14} /></button></div><pre>{curl}</pre></div> : <>
             <div ref={output} className="service-output" aria-label="测试响应" aria-live="polite">{answer || reasoning ? <>{reasoning && <details className="service-reasoning"><summary>思考过程</summary><pre>{reasoning}</pre></details>}{answer && <pre>{answer}</pre>}{testing && <span className="service-cursor" />}</> : <div className="service-test-empty"><Server size={27} strokeWidth={1.2} /><strong>{ready ? '服务已就绪' : working ? service?.message : '启动后即可调用'}</strong><span>{ready ? '发送一条消息，检查端点连接' : '选择配置，按需启动云端服务'}</span></div>}</div>
-            <form className="service-prompt" onSubmit={e => { e.preventDefault(); test() }}><textarea aria-label="测试消息" value={prompt} disabled={testing} onChange={e => setPrompt(e.target.value)} rows={2} maxLength={16000} /><div><small>{ready ? '测试使用当前运行的服务' : '服务就绪后可发送'}</small>{testing ? <button type="button" className="secondary" onClick={() => controller.current?.abort()}><Square size={13} />停止生成</button> : <button className="primary" disabled={!ready || !prompt.trim() || !!service?.active_requests}><Play size={13} />发送测试</button>}</div></form>
+            <form className="service-prompt" onSubmit={e => { e.preventDefault(); test() }}><textarea aria-label="测试消息" value={prompt} disabled={testing} onChange={e => setPrompt(e.target.value)} rows={2} maxLength={16000} /><div><small>{ready ? '测试使用当前运行的服务' : '服务就绪后可发送'}</small>{testing ? <button type="button" className="secondary" onClick={() => controller.current?.abort()}><Square size={13} />停止生成</button> : <button className="primary" disabled={!ready || !prompt.trim() || !outputValid || !!service?.active_requests}><Play size={13} />发送测试</button>}</div></form>
           </>}
           {error && <div className="service-error" role="alert">{error}<button aria-label="关闭服务错误" className="icon-button" onClick={() => setError('')}>×</button></div>}
         </div>

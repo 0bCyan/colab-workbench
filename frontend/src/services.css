@@ -101,3 +101,11 @@
 .service-name-field .field { flex: 1; min-width: 0; margin: 0 }
 .service-name-field input { width: 100%; min-width: 0; font-size: 12px }
 .service-name-field .secondary { flex: none; min-height: 35px; padding: 7px 10px; font-size: 11px }
+
+.service-test .stage-heading { height: auto; min-height: 40px; padding-top: 5px; padding-bottom: 5px; flex-wrap: wrap; gap: 6px 10px }
+.service-output-limit { display: flex; align-items: center; gap: 6px; margin-left: auto; color: #7c8c70; font-size: 10px; white-space: nowrap }
+.service-output-limit input { width: 78px; min-width: 0; min-height: 28px; padding: 4px 6px; font-size: 11px; background: #fafcf6 }
+.service-output-limit small { font-size: 9px; color: #8a997e }
+.service-output-limit input[aria-invalid=true] { border-color: #bd957b; color: #946348 }
+.service-limit-error { flex: none; padding: 6px 12px; background: #fbf0e8; color: #946348; font-size: 10px; line-height: 1.5 }
+@media (max-width: 520px) { .service-output-limit input { width: 72px }.service-output-limit { font-size: 10px } }

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, FolderOpen, LayoutGrid, LoaderCircle, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Server, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, Image as ImageIcon, FolderOpen, LayoutGrid, LoaderCircle, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Server, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
 import Workflow from './Workflow'
 import Library from './Library'
 import Performance from './Performance'
 import Dialog from './Dialog'
 import SettingsDialog from './SettingsDialog'
-import Resolution, { validDimension, resolutionError } from './Resolution'
+import Resolution, { validResolution, resolutionError, imageResolutionError } from './Resolution'
 import Services from './Services'
 import { type State, type Draft, type Job, type Settings, type Graph, activeStatuses, phaseLabel, statusLabel } from './types'
 
@@ -17,6 +17,7 @@ async function api<T = unknown>(path: string, method = 'GET', body?: unknown): P
 }
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 const savedDraft = (draft: Draft): Draft => ({ ...draft, name: draft.name.trim() || '未命名草稿' })
+const isImageGraph = (graph: Graph | undefined) => !!getNode(graph, 'MiniMaxH3ImageConditioning')
 const getNode = (graph: Graph | undefined, type: string) => Object.values(graph ?? {}).find(n => n.class_type === type)
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
   const [state, setState] = useState<State | null>(null)
   const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || '')
   const [draft, setDraft] = useState<Draft | null>(null)
+  const modeDrafts = useRef<Partial<Record<'image' | 'video', Draft>>>({})
   const [page, setPage] = useState<'studio' | 'library' | 'services'>('studio')
   const [mobilePanel, setMobilePanel] = useState<'stage' | 'editor' | 'compute'>('stage')
   const [view, setView] = useState<'preview' | 'workflow'>('preview')
@@ -84,7 +86,9 @@ export default function App() {
   useEffect(() => {
     if (!draft || draft === initialDraft.current) return
     const input = getNode(draft.graph, 'MiniMaxH3ImageToVideo')
-    if (input && (!validDimension(Number(input.inputs.width)) || !validDimension(Number(input.inputs.height)))) {
+    const imageInput = getNode(draft.graph, 'MiniMaxH3ImageConditioning')
+    const dimensionInput = imageInput ?? input
+    if (dimensionInput && !validResolution(Number(dimensionInput.inputs.width), Number(dimensionInput.inputs.height), !!imageInput)) {
       ++draftRevision.current; setSaveState('尺寸待完善'); return
     }
     const revision = ++draftRevision.current
@@ -111,9 +115,15 @@ export default function App() {
   const displayedJob = jobs.find(j => j.id === selectedJob)
   const video = displayedJob?.outputs.find(o => /\.(mp4|webm|mov)$/i.test(o.filename))
   const images = displayedJob?.outputs.filter(o => /\.(png|jpg|jpeg|webp)$/i.test(o.filename)) ?? []
-  const inputNode = getNode(draft?.graph, 'MiniMaxH3ImageToVideo')
-  const samplerNode = getNode(draft?.graph, 'BasicScheduler')
-  const noiseNode = getNode(draft?.graph, 'RandomNoise')
+  const imageMode = isImageGraph(draft?.graph)
+  const model = imageMode ? 'minimax-image' : 'minimax-h3'
+  const inputType = imageMode ? 'MiniMaxH3ImageConditioning' : 'MiniMaxH3ImageToVideo'
+  const samplerType = imageMode ? 'KSampler' : 'BasicScheduler'
+  const noiseType = imageMode ? 'KSampler' : 'RandomNoise'
+  const seedField = imageMode ? 'seed' : 'noise_seed'
+  const inputNode = getNode(draft?.graph, inputType)
+  const samplerNode = getNode(draft?.graph, samplerType)
+  const noiseNode = getNode(draft?.graph, noiseType)
   const createNode = getNode(draft?.graph, 'CreateVideo')
   const prompt = String(inputNode?.inputs.prompt ?? '')
   const frames = Number(inputNode?.inputs.length ?? 124)
@@ -144,15 +154,29 @@ export default function App() {
       await api('/drafts/main', 'PUT', savedDraft(next)); setDraft(next); selectJob(null); setView('workflow'); setPage('studio'); setNotice('工作流已导入')
     })
   }
+  async function switchCreative(kind: 'image' | 'video') {
+    if (!draft || (kind === 'image') === imageMode) return
+    await action('template', async () => {
+      modeDrafts.current[imageMode ? 'image' : 'video'] = draft
+      let next = modeDrafts.current[kind]
+      if (!next) {
+        next = await api<Draft>(`/template?kind=${kind}`)
+        next.name = ''
+        const input = getNode(next.graph, kind === 'image' ? 'MiniMaxH3ImageConditioning' : 'MiniMaxH3ImageToVideo')
+        if (input) input.inputs.prompt = ''
+      }
+      setDraft(next); selectJob(null); setSaveState('新建创作')
+    })
+  }
   async function generate() {
     if (!draft) return
     await action('generate', async () => {
       if (inputNode && !prompt.trim()) { setMobilePanel('editor'); throw new Error('请先填写画面描述') }
-      if (inputNode && (!validDimension(Number(inputNode.inputs.width)) || !validDimension(Number(inputNode.inputs.height)))) {
-        setMobilePanel('editor'); throw new Error(resolutionError)
+      if (inputNode && !validResolution(Number(inputNode.inputs.width), Number(inputNode.inputs.height), imageMode)) {
+        setMobilePanel('editor'); throw new Error(imageMode ? imageResolutionError : resolutionError)
       }
       await api('/drafts/main', 'PUT', savedDraft(draft))
-      const job = await api<Job>('/jobs', 'POST', { ...draft, name: draft.name.trim() || `视频 · ${when(Date.now() / 1000)}`, account, stop_after: stopAfter })
+      const job = await api<Job>('/jobs', 'POST', { ...draft, name: draft.name.trim() || `${imageMode ? '图片' : '视频'} · ${when(Date.now() / 1000)}`, account, stop_after: stopAfter })
       selectJob(job.id); setNotice(machine?.phase === 'ready' ? '任务已加入队列' : '任务已创建，开始准备 GPU')
     })
   }
@@ -160,7 +184,7 @@ export default function App() {
     await action('reuse', async () => { const full = await api<Job>(`/jobs/${job.id}`); if (full.graph) { if (draft && draft !== initialDraft.current) await api(`/drafts/${crypto.randomUUID()}`, 'PUT', savedDraft(draft)); setDraft({ name: job.name, graph: full.graph, positions: {} }); } setPage('studio'); setView('workflow'); selectJob(null); setNotice(draft === initialDraft.current ? '参数已载入' : '参数已载入，原草稿已保存副本') })
   }
 
-  if (!state || !draft) return <div className="loading-screen"><h2>视频工作台</h2><p>{error || '正在连接本地工作台…'}</p>{error && <button className="primary" onClick={() => location.reload()}>重新连接</button>}</div>
+  if (!state || !draft) return <div className="loading-screen"><h2>创作工作台</h2><p>{error || '正在连接本地工作台…'}</p>{error && <button className="primary" onClick={() => location.reload()}>重新连接</button>}</div>
 
   return <div className="app-shell">
     <aside className="rail">
@@ -183,24 +207,24 @@ export default function App() {
       {notice && <div className="toast" role="status"><Check size={15} />{notice}</div>}
 
       {page === 'studio' && <><nav className="mobile-tabs" aria-label="工作区">{(['stage', 'editor', 'compute'] as const).map((p, i) => <button key={p} aria-pressed={mobilePanel === p} className={mobilePanel === p ? 'active' : ''} onClick={() => setMobilePanel(p)}>{['预览与生成', '创作参数', '算力与性能'][i]}</button>)}</nav><div className={`studio-grid mobile-${mobilePanel}`}>
-        <section className="editor-panel panel"><header className="panel-heading"><span><SlidersHorizontal size={15} /> 创作参数</span><span className="subtle">01</span></header>
-          <div className="editor-body"><div className="preset-card"><div className="preset-icon"><Film size={19} /></div><div><strong>MiniMax H3</strong><small>INT8 ConvRot · 本次 {Number(samplerNode?.inputs.steps ?? 20)} 步</small></div><span className="tag">预设</span></div>
+        <section className="editor-panel panel"><header className="panel-heading"><span><SlidersHorizontal size={15} /> 创作参数</span><div className="segmented creative-modes" aria-label="创作类型"><button aria-pressed={imageMode} className={imageMode ? 'active' : ''} disabled={!!busy} onClick={() => switchCreative('image')}><ImageIcon size={14} /> 图片</button><button aria-pressed={!imageMode} className={!imageMode ? 'active' : ''} disabled={!!busy} onClick={() => switchCreative('video')}><Film size={14} /> 视频</button></div></header>
+          <div className="editor-body"><div className="preset-card"><div className="preset-icon">{imageMode ? <ImageIcon size={19} /> : <Film size={19} />}</div><div><strong>MiniMax H3 {imageMode ? 'Image' : 'Video'}</strong><small>INT8 ConvRot · 本次 {Number(samplerNode?.inputs.steps ?? (imageMode ? 6 : 20))} 步</small></div><span className="tag">预设</span></div>
             <label className="field"><span>项目名称</span><input aria-label="项目名称" value={draft.name} placeholder="作品名称（可选）" onChange={e => setDraft({ ...draft, name: e.target.value })} maxLength={100} /></label>
-            <label className="field prompt-field"><span>画面描述 <span className="label-hint">PROMPT</span></span><textarea aria-label="画面描述" value={prompt} placeholder="描述主体、动作和镜头…" onChange={e => updateNode('MiniMaxH3ImageToVideo', { prompt: e.target.value })} spellCheck={false} disabled={!inputNode} /></label>
-            <Resolution width={Number(inputNode?.inputs.width ?? 1344)} height={Number(inputNode?.inputs.height ?? 768)} disabled={!inputNode} change={values => updateNode('MiniMaxH3ImageToVideo', values)} />
-            <div className="field-row"><label className="field"><span>帧数 <span className="label-hint">{(frames / fps).toFixed(2)}s</span></span><input aria-label="帧数" type="number" min={4} max={512} step={4} value={frames} onChange={e => updateNode('MiniMaxH3ImageToVideo', { length: Number(e.target.value) })} /></label><label className="field"><span>帧率</span><input aria-label="帧率" type="number" min={1} max={60} value={fps} onChange={e => updateNode('CreateVideo', { fps: Number(e.target.value) })} /></label></div>
-            <div className="field-row sampling-fields"><label className="field"><span>采样步数</span><input aria-label="采样步数" type="number" min={1} max={100} value={Number(samplerNode?.inputs.steps ?? 20)} onChange={e => updateNode('BasicScheduler', { steps: Number(e.target.value) })} /></label><label className="field seed-field"><span>随机种子<button className="icon-button" aria-label="随机生成种子" title="随机生成种子" onClick={() => updateNode('RandomNoise', { noise_seed: Math.floor(Math.random() * 2 ** 32) })}><RefreshCw size={12} /></button></span><input aria-label="随机种子" type="number" min={0} max={Number.MAX_SAFE_INTEGER} value={Number(noiseNode?.inputs.noise_seed ?? 0)} onChange={e => updateNode('RandomNoise', { noise_seed: Number(e.target.value) })} /></label></div>
-            <div className="config-footnote"><span>{String(getNode(draft.graph, 'KSamplerSelect')?.inputs.sampler_name ?? '自定义采样')}</span><span>{String(samplerNode?.inputs.scheduler ?? '自定义')}</span><span>{Object.values(draft.graph).some(n => /lora/i.test(n.class_type)) ? '包含 LoRA 节点' : '无 LoRA 节点'}</span></div>
+            <label className="field prompt-field"><span>画面描述 <span className="label-hint">PROMPT</span></span><textarea aria-label="画面描述" value={prompt} placeholder="描述主体、动作和镜头…" onChange={e => updateNode(inputType, { prompt: e.target.value })} spellCheck={false} disabled={!inputNode} /></label>
+            <Resolution key={model} image={imageMode} width={Number(inputNode?.inputs.width ?? 1344)} height={Number(inputNode?.inputs.height ?? 768)} disabled={!inputNode} change={values => updateNode(inputType, values)} />
+            {!imageMode && <div className="field-row"><label className="field"><span>帧数 <span className="label-hint">{(frames / fps).toFixed(2)}s</span></span><input aria-label="帧数" type="number" min={4} max={512} step={4} value={frames} onChange={e => updateNode(inputType, { length: Number(e.target.value) })} /></label><label className="field"><span>帧率</span><input aria-label="帧率" type="number" min={1} max={60} value={fps} onChange={e => updateNode('CreateVideo', { fps: Number(e.target.value) })} /></label></div>}
+            <div className="field-row sampling-fields"><label className="field"><span>采样步数</span><input aria-label="采样步数" type="number" min={1} max={100} value={Number(samplerNode?.inputs.steps ?? (imageMode ? 6 : 20))} onChange={e => updateNode(samplerType, { steps: Number(e.target.value) })} /></label><label className="field seed-field"><span>随机种子<button className="icon-button" aria-label="随机生成种子" title="随机生成种子" onClick={() => updateNode(noiseType, { [seedField]: Math.floor(Math.random() * 2 ** 32) })}><RefreshCw size={12} /></button></span><input aria-label="随机种子" type="number" min={0} max={Number.MAX_SAFE_INTEGER} value={Number(noiseNode?.inputs[seedField] ?? 0)} onChange={e => updateNode(noiseType, { [seedField]: Number(e.target.value) })} /></label></div>
+            <div className="config-footnote"><span>{String((imageMode ? samplerNode : getNode(draft.graph, 'KSamplerSelect'))?.inputs.sampler_name ?? '自定义采样')}</span><span>{String(samplerNode?.inputs.scheduler ?? '自定义')}</span><span>{Object.values(draft.graph).some(n => /lora/i.test(n.class_type)) ? '包含 LoRA 节点' : '无 LoRA 节点'}</span></div>
           </div><footer className="editor-footer"><span className={saveState.startsWith('保存失败') ? 'danger' : ''}><Check size={12} />{saveState}</span><button className="text-button" onClick={() => action('snapshot', async () => { await api(`/drafts/${crypto.randomUUID()}`, 'PUT', savedDraft(draft)); setNotice('草稿副本已保存') })}><Save size={13} />另存</button></footer>
         </section>
 
-        <section className="stage-column"><div className="stage panel"><header className="stage-heading"><div className="segmented"><button className={view === 'preview' ? 'active' : ''} onClick={() => setView('preview')}><Play size={13} /> 预览</button><button className={view === 'workflow' ? 'active' : ''} onClick={() => setView('workflow')}><Network size={13} /> 工作流</button></div><span className="subtle">{view === 'preview' ? '画面 · 声音' : `${Object.keys(draft.graph).length} 个节点`}</span></header>
+        <section className="stage-column"><div className="stage panel"><header className="stage-heading"><div className="segmented"><button className={view === 'preview' ? 'active' : ''} onClick={() => setView('preview')}><Play size={13} /> 预览</button><button className={view === 'workflow' ? 'active' : ''} onClick={() => setView('workflow')}><Network size={13} /> 工作流</button></div><span className="subtle">{view === 'preview' ? imageMode ? '画面' : '画面 · 声音' : `${Object.keys(draft.graph).length} 个节点`}</span></header>
           {view === 'workflow' ? <Workflow draft={draft} update={setDraft} openJson={openJson} nativeUrl={nativeUrl} fail={setError} /> : video || images.length ? <div className="preview-wrap"><div className="preview-top"><span className="preview-badge"><span className="tiny-dot" />本地成片</span><span className="preview-corner">H3 / INT8</span></div>
             {video ? <video key={video.url} controls preload="metadata" src={video.url} /> : <img alt="生成结果" src={images[0].url} />}
             <div className="preview-caption"><span>{displayedJob?.name}<small>{displayedJob?.account} · 已保存到本地</small></span><a className="preview-download" aria-label="下载当前成片" href={(video || images[0]).url} download><ArrowDownToLine size={17} /></a></div></div> : <div className="preview-empty" role="status">{displayedJob && activeStatuses.has(displayedJob.status) ? <><LoaderCircle size={28} className="spin" /><strong>{statusLabel[displayedJob.status]}</strong><span>{displayedJob.message}</span></> : <><Film size={32} strokeWidth={1.2} /><strong>{displayedJob ? statusLabel[displayedJob.status] : '等待创作'}</strong><span>{displayedJob ? displayedJob.message : '生成后在这里预览'}</span></>}</div>}
           <div className="stage-status"><span><span className={`tiny-dot ${machine?.phase === 'ready' ? '' : 'muted'}`} />{running.length ? running[0].message : '准备好下一次创作'}</span><button className="text-button" onClick={() => setPage('library')}>全部任务 <ArrowUpRight size={13} /></button></div>
         </div>
-        <div className="render-bar panel"><div><div className="render-title"><Sparkles size={16} /><strong>{running.length ? `${running.length} 个任务进行中` : machine?.phase === 'ready' ? 'GPU 已就绪' : '按需启动 GPU'}</strong></div></div><button className="primary generate" onClick={generate} disabled={!!busy || !profile?.installed || !profile.credential_present || machine?.phase === 'stopping'}><Play size={16} fill="currentColor" />{busy === 'generate' ? '提交中…' : running.length ? '加入队列' : '生成视频'}<span>↗</span></button></div>
+        <div className="render-bar panel"><div><div className="render-title"><Sparkles size={16} /><strong>{running.length ? `${running.length} 个任务进行中` : machine?.phase === 'ready' ? 'GPU 已就绪' : '按需启动 GPU'}</strong></div></div><button className="primary generate" onClick={generate} disabled={!!busy || !profile?.installed || !profile.credential_present || machine?.phase === 'stopping'}><Play size={16} fill="currentColor" />{busy === 'generate' ? '提交中…' : running.length ? '加入队列' : imageMode ? '生成图片' : '生成视频'}<span>↗</span></button></div>
         <div className="under-stage"><label className="checkbox"><input type="checkbox" checked={stopAfter} onChange={e => setStopAfter(e.target.checked)} />取回成片后关闭 GPU</label></div>
         {running.length > 0 && <div className="current-jobs">{running.slice(0, 1).map(j => <div className="current-job" key={j.id}><div><span className="status-chip working"><LoaderCircle size={12} className="spin" />{statusLabel[j.status]}</span><strong>{j.name}</strong><span>{j.message}</span></div><div className="inline-actions">{j.status === 'recovering' && <button className="text-button" disabled={!!busy} onClick={() => action('resume', () => api(`/jobs/${j.id}/resume`, 'POST'))}>恢复查询</button>}<button className="text-button" onClick={() => action('cancel', () => api(`/jobs/${j.id}/cancel`, 'POST'))} disabled={!!busy}>取消</button></div>{j.progress != null && <div className="progress-track"><span style={{ width: `${j.progress}%` }} /></div>}</div>)}</div>}
         </section>
@@ -211,7 +235,7 @@ export default function App() {
           <div className="gpu-summary"><span><Cpu size={15} />RTX PRO 6000 <small>96 GB</small></span><span className={`status-chip ${machine?.phase === 'ready' ? 'success' : computing ? 'working' : ''}`}>{phaseLabel[machine?.phase ?? 'stopped']}</span></div>
           <div className="usage-grid"><div><span>账号余额</span><strong>{profile?.usage?.balance?.toLocaleString('en-US', { maximumFractionDigits: 2 }) ?? '—'}<small> CU</small></strong></div><div><span>账号消耗</span><strong>{profile?.usage?.rate?.toFixed(2) ?? '—'}<small> /h</small></strong></div></div>
           {(profile?.error || machine?.phase !== 'ready') && <div className="machine-message" title={profile?.error || machine?.message}>{profile?.error || machine?.message}</div>}{(profile?.sessions ?? []).filter(s => s.name !== machine?.session && !state.llm?.services.some(service => service.session === s.name)).length > 0 && <div className="external-sessions">另有 {(profile?.sessions ?? []).filter(s => s.name !== machine?.session && !state.llm?.services.some(service => service.session === s.name)).length} 台外部会话</div>}
-          {machine?.phase === 'ready' ? <a className="secondary full" href={nativeUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开 ComfyUI</a> : <button className="secondary full" disabled={!!busy || computing || !profile?.installed || !profile.credential_present} onClick={() => action('start', () => api(`/accounts/${account}/start`, 'POST'))}>{computing ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{computing ? '正在准备…' : machine?.session ? '重新连接 / 重试部署' : '启动 GPU'}</button>}
+          {machine?.phase === 'ready' && (machine.loaded_models ?? ['minimax-h3']).includes(model) ? <a className="secondary full" href={nativeUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开 ComfyUI</a> : <button className="secondary full" disabled={!!busy || computing || !profile?.installed || !profile.credential_present} onClick={() => action('start', () => api(`/accounts/${account}/start`, 'POST', { model }))}>{computing ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{computing ? '正在准备…' : machine?.session ? '重新连接 / 重试部署' : machine?.phase === 'ready' ? '加载所选模型' : '启动 GPU'}</button>}
           {machine?.session && <button className="stop-button" disabled={!!busy || running.length > 0 || machine.phase === 'stopping'} title={running.length ? '请先取消未完成任务' : '释放这个工作台的云端机器'} onClick={() => action('stop', () => api(`/accounts/${account}/stop`, 'POST'))}><Power size={13} />{machine.phase === 'stopping' ? '正在关闭…' : '关闭并释放机器'}</button>}
           <div className="compute-footer"><button className="text-button" disabled={!profile} onClick={() => setModal('logs')}><Terminal size={12} />部署日志</button><button className="text-button" aria-haspopup="dialog" onClick={() => setModal('settings')}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
         </div></section>
@@ -236,7 +260,7 @@ export default function App() {
       {modal === 'json' && <><p>ComfyUI 的 API 格式。可以修改节点、连接、模型与参数。</p><textarea className="json-editor" aria-label="API JSON" value={json} onChange={e => setJson(e.target.value)} spellCheck={false} /><footer><button className="secondary" onClick={exportGraph}><FileJson size={14} />导出当前工作流</button><button className="primary" onClick={() => action('json', async () => { const graph = JSON.parse(json); const next = { ...draft, graph }; await api('/drafts/main', 'PUT', savedDraft(next)); setDraft(next); setModal(null); setView('workflow'); setNotice('工作流已更新') })}>应用修改</button></footer></>}
       {modal === 'logs' && <><p>安装、下载、连接与机器生命周期记录。</p><div className="logs">{logs.length ? logs.map((l, i) => <div key={i}><time>{when(l.time)}</time><pre>{l.message}</pre></div>) : <div className="log-empty">尚无部署记录。启动 GPU 后，这里会显示进度。</div>}</div></>}
       {modal === 'drafts' && <div className="draft-list">{state.drafts.length ? state.drafts.map(d => <button key={d.id} onClick={() => action('draft', async () => { const next = await api<Draft>(`/drafts/${d.id}`); setDraft({ name: next.name, graph: next.graph, positions: next.positions }); selectJob(null); setModal(null); setPage('studio') })}><FileJson size={18} /><span><strong>{d.name}{d.id === 'main' ? ' · 最近自动保存' : ''}</strong><small>{when(d.updated_at)}</small></span><ArrowUpRight size={14} /></button>) : <p>编辑工作流后会自动保存。</p>}<button onClick={() => action('template', async () => { const next = await api<Draft>('/template'); setDraft(next); selectJob(null); setModal(null); setPage('studio') })}><Plus size={18} /><span>载入已验证的 H3 模板</span></button></div>}
-      {modal === 'help' && <div className="help-content"><div><b>01</b><section><h3>本地编辑</h3><p>修改提示词与参数，或在节点画布连接、编辑工作流。草稿自动保存。导入时请选择 ComfyUI 导出的 API JSON。</p></section></div><div><b>02</b><section><h3>选择账号，按需计算</h3><p>点击「生成视频」后自动申请 G4，安装固定版本和四个模型，再执行任务。首次需下载约 40 GB 模型；后续生成复用同一台机器。</p></section></div><div><b>03</b><section><h3>成片留在本机</h3><p>生成完成后自动取回视频和工作流。可选择任务完成后关闭 GPU，或者等待空闲关机。切换账号不关闭原账号机器。</p></section></div><p className="settings-note">完整 ComfyUI 编辑器通过本地隧道打开。在原生编辑器直接提交的任务可正常运行，但需自行导出成片；工作台只自动归档从这里提交的任务。新增自定义节点和模型需要另外配置部署。</p></div>}
+      {modal === 'help' && <div className="help-content"><div><b>01</b><section><h3>本地编辑</h3><p>修改提示词与参数，或在节点画布连接、编辑工作流。草稿自动保存。导入时请选择 ComfyUI 导出的 API JSON。</p></section></div><div><b>02</b><section><h3>选择账号，按需计算</h3><p>选择图片或视频后生成，自动申请 G4，下载所需权重并安装环境。切换模型可复用当前机器。</p></section></div><div><b>03</b><section><h3>成片留在本机</h3><p>生成完成后自动取回图片、视频和工作流。可选择任务完成后关闭 GPU，或者等待空闲关机。切换账号不关闭原账号机器。</p></section></div><p className="settings-note">完整 ComfyUI 编辑器通过本地隧道打开。在原生编辑器直接提交的任务可正常运行，但需自行导出成片；工作台只自动归档从这里提交的任务。新增自定义节点和模型需要另外配置部署。</p></div>}
     </Dialog>}
   </div>
 }

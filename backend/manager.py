@@ -10,6 +10,7 @@ import aiohttp
 
 from .colab import clean
 from .config import REMOTE_ROOT, ROOT, default_identity
+from .media import graph_model, media_preset
 from .telemetry import Telemetry
 from .workflows import validate_graph
 
@@ -75,22 +76,41 @@ class Manager:
                 await self.colab.close_tunnel(account)
             return self.store.get("accounts", account)
 
-    def request_start(self, account):
-        self.machine(account)
+    def request_start(self, account, model=None):
+        machine = self.machine(account)
+        model = model or machine.get('model', 'minimax-h3')
+        preset = media_preset(model)
         if hasattr(self.colab, 'validate_connection'):
             self.colab.validate_connection(self.store.get('settings', 'main')['identity'])
         if self.bundles:
-            self.bundles.require(['h3-video-g4-v1'])
+            self.bundles.require([preset['bundle']])
         if account in self.stopping:
             raise ValueError("机器正在停止，请稍候")
+        if model not in machine.get('loaded_models', ['minimax-h3']) and any(j.get('prompt_id') for j in self.active_jobs(account)):
+            raise ValueError('当前 GPU 有任务运行，请完成后再切换模型')
+        if account in self.start_tasks and not self.start_tasks[account].done():
+            if machine.get('model', 'minimax-h3') != model:
+                raise ValueError('正在准备另一个创作模型，请等待完成')
+            return machine
         if account not in self.start_tasks or self.start_tasks[account].done():
-            self.start_tasks[account] = asyncio.create_task(self.start(account))
+            self.machine(account, model=model)
+            self.start_tasks[account] = asyncio.create_task(self.start(account, model))
         return self.machine(account)
 
-    async def start(self, account):
+    async def start(self, account, model='minimax-h3'):
         async with self.locks[account]:
             machine = self.machine(account)
-            if machine["phase"] == "ready":
+            loaded = machine.get('loaded_models', ['minimax-h3'] if machine.get('session') else [])
+            if machine['phase'] == 'ready' and model not in loaded:
+                # A native ComfyUI job must also finish before changing files in its environment.
+                try:
+                    queue = await self.remote(account, 'GET', '/queue')
+                    if queue.get('queue_running') or queue.get('queue_pending'):
+                        self.log(account, '当前 GPU 有原生任务运行，请完成后再切换模型')
+                        return
+                except (aiohttp.ClientError, TimeoutError, RuntimeError):
+                    pass
+            if machine["phase"] == "ready" and model in loaded:
                 try:
                     await self.remote(account, "GET", "/system_stats")
                     self.ensure_worker(account)
@@ -111,9 +131,10 @@ class Manager:
                             self.job(job["id"], status="failed", message="原云端会话已释放，无法恢复输出。请新建任务。")
                     session = None
                 if not session:
+                    loaded = []
                     install = self.store.get("meta", "install")["id"]
                     session = f"wb-{install}-{account.removeprefix('colab')}-{uuid.uuid4().hex[:6]}"
-                    self.machine(account, session=session, phase="provisioning", message="申请 G4 / RTX PRO 6000", created_at=time.time())
+                    self.machine(account, session=session, loaded_models=[], phase="provisioning", message="申请 G4 / RTX PRO 6000", created_at=time.time())
                     self.log(account, f"申请会话 {session}")
                     await self.colab.create(account, session)
                 if account in self.stopping:
@@ -125,11 +146,15 @@ class Manager:
                     self.log(account, f"额度刷新暂时失败，部署继续：{exc}")
                 deploy = (ROOT / "backend/deploy_remote.py").read_bytes()
                 telemetry = (ROOT / "backend/telemetry_remote.py").read_bytes()
-                cloud = self.bundles.lease(account, ['h3-video-g4-v1']) if self.bundles else None
+                cloud = self.bundles.lease(account, [media_preset(model)['bundle']]) if self.bundles else None
+                if cloud:
+                    cloud['bundle_id'] = media_preset(model)['bundle']
                 bootstrap = self.store.directory / f"{account}-bootstrap.py"
                 bootstrap.write_text(
                     "import base64, subprocess, sys\nfrom pathlib import Path\n"
                     f"root=Path({REMOTE_ROOT!r}); root.mkdir(parents=True,exist_ok=True)\n"
+                    f"(root/'media-config.json').write_text({json.dumps({'model': model})!r})\n"
+                    f"(root/'deploy-status.json').write_text({json.dumps({'phase': 'starting', 'model': model})!r})\n"
                     f"(root/'deploy_remote.py').write_bytes(base64.b64decode({base64.b64encode(deploy).decode()!r}))\n"
                     f"(root/'telemetry_remote.py').write_bytes(base64.b64decode({base64.b64encode(telemetry).decode()!r}))\n"
                     + (f"(root/'bundle_restore_remote.py').write_bytes(base64.b64decode({base64.b64encode((ROOT / 'backend/bundle_restore_remote.py').read_bytes()).decode()!r}))\n"
@@ -156,13 +181,15 @@ class Manager:
                     "  with f.open('rb') as stream:\n"
                     "   stream.seek(max(0,f.stat().st_size-2500)); print(name+':'+stream.read().decode(errors='replace'))\n"
                 )
-                deadline, last_check = time.monotonic() + 3600, 0
+                deadline, last_check, deployment_ready = time.monotonic() + 3600, 0, False
                 while time.monotonic() < deadline:
                     if account in self.stopping:
                         return
                     try:
+                        if not deployment_ready:
+                            raise RuntimeError('等待所选模型权重')
                         stats = await self.remote(account, "GET", "/system_stats", timeout=5)
-                        self.machine(account, phase="ready", message="GPU 已就绪", stats=stats, last_activity=time.time())
+                        self.machine(account, phase="ready", loaded_models=sorted(set(loaded + [model])), message="GPU 已就绪", stats=stats, last_activity=time.time())
                         self.log(account, "ComfyUI 已连接，可提交工作流")
                         self.ensure_worker(account)
                         return
@@ -173,9 +200,12 @@ class Manager:
                         for line in output.splitlines():
                             if line.startswith("WB_STATUS:"):
                                 status = json.loads(line.removeprefix("WB_STATUS:"))
+                                if status.get('model', model) != model:
+                                    continue
                                 if status.get("phase") == "error":
                                     raise RuntimeError(status.get("message", "部署失败") + "\n" + output[-2500:])
                                 self.machine(account, message=status.get("message", "等待部署"), deployment=status)
+                                deployment_ready = status.get('phase') == 'ready'
                         self.log(account, output)
                         last_check = time.monotonic()
                     await asyncio.sleep(3)
@@ -209,6 +239,9 @@ class Manager:
 
     def submit(self, account, graph, name, stop_after):
         validate_graph(graph)
+        model = graph_model(graph)
+        if self.bundles:
+            self.bundles.require([media_preset(model)['bundle']])
         self.machine(account)
         if account in self.stopping:
             raise ValueError("账号的机器正在停止")
@@ -222,7 +255,7 @@ class Manager:
             if node["class_type"] in {"SaveVideo", "SaveImage", "SaveAudio"}:
                 node["inputs"]["filename_prefix"] = f"workbench/{key}"
         self.store.put("jobs", key, {
-            "id": key, "account": account, "name": name, "graph": graph, "status": "pending",
+            "id": key, "account": account, "name": name, "graph": graph, "model": model, "status": "pending",
             "created_at": time.time(), "updated_at": time.time(), "stop_after": stop_after,
             "message": "等待 GPU", "outputs": [], "prompt_id": None, "progress": None,
         })
@@ -241,14 +274,22 @@ class Manager:
             job = jobs[0]
             self.inflight_jobs.add(job["id"])
             try:
-                if self.machine(account)["phase"] != "ready":
+                model = job.get('model') or graph_model(job['graph'])
+                machine = self.machine(account)
+                if machine["phase"] != "ready" or model not in machine.get('loaded_models', ['minimax-h3']):
                     self.job(job["id"], status="preparing", message="准备云端计算环境")
-                    self.request_start(account)
+                    starting = self.start_tasks.get(account)
+                    if starting and not starting.done():
+                        await asyncio.shield(starting)
+                        continue
+                    self.request_start(account, model)
                     # Cancelling a worker must not cancel an allocation request: its result
                     # is needed to identify and release the newly assigned cloud machine.
                     await asyncio.shield(self.start_tasks[account])
                 if self.machine(account)["phase"] != "ready":
                     return
+                if model not in self.machine(account).get('loaded_models', ['minimax-h3']):
+                    raise ValueError('所选模型尚未加载，请等待当前 GPU 任务完成')
                 if self.job(job["id"])["status"] not in ACTIVE:
                     continue
                 await self.run_job(self.job(job["id"]))

@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from aiohttp import web
 
 LLM_BUNDLE = 'orca-flash-next-nvfp4-strata-mtp-g4-v1'
-MEDIA_BUNDLES = {'minimax-h3': 'h3-video-g4-v1'}
+MEDIA_BUNDLES = {'minimax-h3': 'h3-video-g4-v1', 'minimax-image': 'h3-image-g4-v1'}
 
 
 def validate_index(data, key):

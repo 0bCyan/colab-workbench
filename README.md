@@ -123,15 +123,18 @@ print(response.choices[0].message.content)
 
 ## 云盘权重与并行初始化
 
-原版 Fieldwork 仅提供 LLM 和 H3 视频两条部署路线。两者都已接入私有云盘权重清单：模型字节由云盘直接进入 Colab 的内存文件系统，本机只保留小型索引和控制数据。环境不制作成 Python 镜像；H3 在下载时安装 ComfyUI，LLM 在引擎/脚本归档恢复后安装轻量 Python 依赖，同时继续下载权重。
+Fieldwork 提供 LLM、H3 视频和 H3 图片三条部署路线，都已接入私有云盘权重清单：模型字节由云盘直接进入 Colab 的内存文件系统，本机只保留小型索引和控制数据。环境不制作成 Python 镜像；H3 在下载时安装 ComfyUI，LLM 在引擎/脚本归档恢复后安装轻量 Python 依赖，同时继续下载权重。
 
-下载通过现有 SSH 通道提供临时只读授权，不公开下载代理，不把长期云盘刷新凭证发送到 GPU。默认 64 路、可配置 1–256 路有界 Range 下载，内存中的分块负载上限保持 4 GiB，逐文件完整 SHA256 校验，通过后才提交可加载文件。LLM 直接读取完整 PLE，不重组分片；H3 的四个权重也直接恢复到独立 tmpfs。内存不足、缺少索引或授权时明确报错；本地配置检查在申请 GPU 之前执行。
+「创作参数」顶部可切换图片／视频，各自保留本次打开页面内的编辑。H3 Image 使用 Comfy-Org 量化包：DiT 为 INT8 ConvRot、共享 Qwen3-VL 编码器为 NVFP4 AWQ、图像 VAE 为 FP16，并非 MiniMax 官方 BF16 原版。默认 2048×2048、6 步、CFG 1、Euler／simple，无提示词扩写模型；可选 4／9／16 MP 及自定义 4–20 MP 尺寸。此模型低分辨率效果较差，不沿用视频尺寸预设。图片和视频按需下载各自权重，空闲时切换可复用同一台 ComfyUI 机器和共享编码器；已有模型继续保留，运行中的任务不会被切换操作重启。
+
+下载通过现有 SSH 通道提供临时只读授权，不公开下载代理，不把长期云盘刷新凭证发送到 GPU。默认 64 路，LLM 可配置 1–256 路有界 Range 下载，内存中的分块负载上限保持 4 GiB，逐文件完整 SHA256 校验，通过后才提交可加载文件。LLM 直接读取完整 PLE，不重组分片；H3 视频四文件／图片三文件也直接恢复到独立 tmpfs。内存不足、缺少索引或授权时明确报错；本地配置检查在申请 GPU 之前执行。
 
 私有索引保存在 `.data/cloud/`，实际云盘文件 ID、账号授权和模型不随代码发布。首次安装可导入自己已校验的索引：
 
 ```sh
 uv run python scripts/import_bundle.py /path/to/orca-flash-next-nvfp4-strata-mtp-g4-v1.json
 uv run python scripts/import_bundle.py /path/to/h3-video-g4-v1.json
+uv run python scripts/import_bundle.py /path/to/h3-image-g4-v1.json
 ```
 
 还需 rclone 独立的 `reader` remote，使用 `scope = drive.readonly`；默认授权文件为用户目录下 `.local/share/llm-workbench/drive-reader.conf`。可通过 `WORKBENCH_DRIVE_READER`、`WORKBENCH_RCLONE` 覆盖位置。Colab CLI 登录与云盘读取授权分别管理。清单导入及模型设置不会申请机器。64／96／128／192／256 路均完成两轮 8 GiB 顺序校验下载，全部无重试或 HTTP 错误；96 路略快，256 路明显变慢。该短样本未确定绝对稳定极限，默认继续采用完整模型恢复已验证的 64 路；高并发由用户按需选择。

@@ -22,6 +22,13 @@ def validate_graph(graph):
             elif isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"节点 {key}.{field} 必须是有限数值")
         inputs = node["inputs"]
+        if node['class_type'] == 'MiniMaxH3ImageConditioning':
+            for field in ('width', 'height'):
+                value = inputs.get(field)
+                if type(value) is not int or not 1024 <= value <= 8192 or value % 32:
+                    raise ValueError('H3 图片宽高必须为 1024–8192 内的 32 的倍数')
+            if not 4_000_000 <= inputs['width'] * inputs['height'] <= 20_000_000:
+                raise ValueError('H3 图片面积需要在 4–20 MP 之间')
         if node["class_type"] == "MiniMaxH3ImageToVideo":
             for field in ("width", "height"):
                 value = inputs.get(field)
@@ -30,12 +37,12 @@ def validate_graph(graph):
             value = inputs.get("length")
             if type(value) is not int or not 4 <= value <= 512 or value % 4:
                 raise ValueError("帧数必须是 4–512 内的 4 的倍数")
-        if node["class_type"] == "BasicScheduler":
+        if node["class_type"] in {"BasicScheduler", "KSampler"}:
             steps = inputs.get("steps")
             if type(steps) is not int or not 1 <= steps <= 100:
                 raise ValueError("采样步数必须在 1–100 之间")
-        if node["class_type"] == "RandomNoise":
-            seed = inputs.get("noise_seed")
+        if node["class_type"] in {"RandomNoise", "KSampler"}:
+            seed = inputs.get("noise_seed" if node['class_type'] == 'RandomNoise' else 'seed')
             if type(seed) is not int or not 0 <= seed <= 2**53 - 1:
                 raise ValueError("随机种子必须是非负安全整数")
         if node["class_type"] == "CreateVideo":

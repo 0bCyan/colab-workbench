@@ -24,6 +24,7 @@ from .library import Library
 from .llm import BUSY, LLM
 from .llm_presets import PRESETS
 from .manager import Manager
+from .media import MEDIA
 from .store import Store
 from .workflows import validate_graph
 
@@ -38,6 +39,11 @@ class Draft(BaseModel):
 class Submission(Draft):
     account: str
     stop_after: bool = False
+
+
+class CreativeStart(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    model: Literal['minimax-h3', 'minimax-image'] = 'minimax-h3'
 
 
 class Settings(BaseModel):
@@ -204,8 +210,9 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 "preset": {"comfy_commit": COMFY_COMMIT, "model_revision": MODEL_REVISION, "models": MODEL_FILES}}
 
     @app.get("/api/template")
-    async def template():
-        return {"name": "H3 · 雪林中的狐狸", "graph": json.loads((ROOT / "templates/h3-int8.json").read_text()), "positions": {}}
+    async def template(kind: Literal['video', 'image'] = 'video'):
+        item = MEDIA[kind]
+        return {"name": item['name'], "graph": json.loads((ROOT / 'templates' / item['template']).read_text()), "positions": {}}
 
     @app.post("/api/accounts/{account}/refresh")
     async def refresh(account):
@@ -218,9 +225,9 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
             raise HTTPException(502, clean(str(exc))) from exc
 
     @app.post("/api/accounts/{account}/start", status_code=202)
-    async def start(account):
+    async def start(account, body: CreativeStart | None = None):
         manager().machine(account)
-        return manager().request_start(account)
+        return manager().request_start(account, body.model if body else None)
 
     @app.post("/api/accounts/{account}/stop", status_code=202)
     async def stop(account):

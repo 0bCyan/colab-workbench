@@ -1,0 +1,84 @@
+import json
+
+import pytest
+
+from backend.config import ROOT
+from backend.manager import Manager
+from backend.media import graph_model
+from backend.store import Store
+from backend.workflows import validate_graph
+from tests.fake_colab import PROFILES, FakeColab
+from tests.test_lifecycle import eventually
+
+
+def image_graph():
+    return json.loads((ROOT / 'templates/h3-image.json').read_text())
+
+
+def test_image_resolution_rejects_low_res_and_checks_area():
+    graph = image_graph()
+    assert graph_model(validate_graph(graph)) == 'minimax-image'
+    graph['4']['inputs'].update(width=1024, height=1024)
+    with pytest.raises(ValueError, match='4–20 MP'):
+        validate_graph(graph)
+    graph['4']['inputs'].update(width=4096, height=4096)
+    validate_graph(graph)
+    graph['4']['inputs'].update(width=8192, height=8192)
+    with pytest.raises(ValueError, match='4–20 MP'):
+        validate_graph(graph)
+
+
+async def test_image_then_video_reuses_vm_and_retains_both_models(tmp_path):
+    store, fake = Store(tmp_path), FakeColab()
+    manager = Manager(store, fake, PROFILES)
+    await manager.open()
+    try:
+        manager.request_start('colab2', 'minimax-image')
+        await eventually(lambda: manager.machine('colab2')['phase'] == 'ready')
+        assert manager.machine('colab2')['loaded_models'] == ['minimax-image']
+        session = manager.machine('colab2')['session']
+        bootstrap = (tmp_path / 'colab2-bootstrap.py').read_text()
+        assert 'minimax-image' in bootstrap
+        manager.request_start('colab2', 'minimax-h3')
+        await manager.start_tasks['colab2']
+        assert manager.machine('colab2')['phase'] == 'ready'
+        assert set(manager.machine('colab2')['loaded_models']) == {'minimax-h3', 'minimax-image'}
+        assert manager.machine('colab2')['session'] == session
+        assert len([call for call in fake.calls if call[1] == 'create']) == 1
+        assert fake.active['colab1'][0]['name'] == 'unrelated-important-session'
+    finally:
+        await manager.close()
+        store.close()
+
+
+async def test_missing_image_bundle_submission_does_not_allocate(tmp_path):
+    from backend.bundles import Bundles
+    store, fake = Store(tmp_path), FakeColab()
+    manager = Manager(store, fake, PROFILES, Bundles(tmp_path))
+    try:
+        with pytest.raises(ValueError, match='h3-image-g4-v1'):
+            manager.submit('colab2', image_graph(), 'image', False)
+        assert not fake.calls and not store.all('jobs')
+    finally:
+        store.close()
+
+
+async def test_image_queued_during_video_start_waits_and_reuses_vm(tmp_path):
+    import asyncio
+    store, fake = Store(tmp_path), FakeColab(delay=.05)
+    manager = Manager(store, fake, PROFILES)
+    await manager.open()
+    fake.create_gate = asyncio.Event()
+    try:
+        manager.request_start('colab2', 'minimax-h3')
+        await eventually(lambda: any(c[1] == 'create' for c in fake.calls))
+        job = manager.submit('colab2', image_graph(), 'queued image', False)
+        fake.create_gate.set()
+        await eventually(lambda: manager.job(job['id'])['status'] == 'completed')
+        assert manager.job(job['id'])['outputs'][0]['filename'].endswith('.png')
+        assert set(manager.machine('colab2')['loaded_models']) == {'minimax-h3', 'minimax-image'}
+        assert len([c for c in fake.calls if c[1] == 'create']) == 1
+    finally:
+        fake.create_gate.set()
+        await manager.close()
+        store.close()

@@ -23,10 +23,24 @@ FILES = [
     "vae/minimax_h3_video_vae_int8_convrot.safetensors",
     "vae/minimax_h3_audio_vae_fp32.safetensors",
 ]
+IMAGE_REVISION = '0bb149f51e3156ed4b90dd45d5620346bfe1df8f'
+IMAGE_FILES = [
+    'diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors',
+    'text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+    'vae/minimax_h3_image_vae_fp16.safetensors',
+]
+
+
+def selected_model():
+    config = ROOT / 'media-config.json'
+    model = json.loads(config.read_text())['model'] if config.exists() else 'minimax-h3'
+    if model not in {'minimax-h3', 'minimax-image'}:
+        raise ValueError('未知创作模型')
+    return model
 
 
 def status(phase, message, **extra):
-    data = {"phase": phase, "message": message, "time": time.time(), **extra}
+    data = {"phase": phase, "message": message, "time": time.time(), 'model': selected_model(), **extra}
     temp = ROOT / "deploy-status.tmp"
     temp.write_text(json.dumps(data))
     temp.replace(ROOT / "deploy-status.json")
@@ -49,12 +63,12 @@ def restore_cloud_weights():
     import requests
 
     cloud = json.loads((ROOT / 'bundle-config.json').read_text())
-    key = 'h3-video-g4-v1'
+    key = 'h3-image-g4-v1' if selected_model() == 'minimax-image' else 'h3-video-g4-v1'
     response = requests.get(cloud['base'] + '/' + key + '.json', timeout=30)
     response.raise_for_status()
     index = response.json()
     if not index.get('weights_only') or index.get('preset') != key:
-        raise ValueError('需要 H3 视频纯权重部署包')
+        raise ValueError('需要对应 H3 模型的纯权重部署包')
     weights = ROOT / 'weights'
     if not os.path.ismount(weights):
         available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
@@ -101,6 +115,8 @@ def main():
             return
         try:
             if healthy():
+                # Add the selected model to this VM without restarting ComfyUI or discarding other weights.
+                download_models()
                 status("ready", "ComfyUI 已就绪")
                 return
             status("checking", "检查 Blackwell GPU 与 CUDA")
@@ -137,14 +153,17 @@ def download_models():
         return records
     from huggingface_hub import hf_hub_download
     records = []
-    for index, filename in enumerate(FILES):
-        status("downloading", f"下载模型 {index + 1}/{len(FILES)} · {Path(filename).name}", file_index=index, total_files=len(FILES))
-        path = Path(hf_hub_download("Comfy-Org/MiniMax-H3", filename, revision=REVISION, cache_dir=str(ROOT / "hf-cache")))
+    files = IMAGE_FILES if selected_model() == 'minimax-image' else FILES
+    for index, filename in enumerate(files):
+        image_file = filename in IMAGE_FILES and not filename.startswith('text_encoders/')
+        repo, revision = ('Comfy-Org/MiniMax-H3-Image', IMAGE_REVISION) if image_file else ('Comfy-Org/MiniMax-H3', REVISION)
+        status("downloading", f"下载模型 {index + 1}/{len(files)} · {Path(filename).name}", file_index=index, total_files=len(files))
+        path = Path(hf_hub_download(repo, filename, revision=revision, cache_dir=str(ROOT / "hf-cache")))
         target = COMFY / "models" / filename
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             target.symlink_to(path)
-        records.append({"file": filename, "bytes": path.stat().st_size, "revision": REVISION})
+        records.append({"file": filename, "bytes": path.stat().st_size, "revision": revision})
     (ROOT / "assets.json").write_text(json.dumps(records))
     return records
 
@@ -163,7 +182,7 @@ def download_and_serve():
         if proc.poll() is not None:
             raise RuntimeError("ComfyUI 启动失败：" + (ROOT / "server.log").read_text(errors="replace")[-3500:])
         if healthy():
-            status("ready", "ComfyUI 与四个模型已就绪", gpu="RTX PRO 6000", assets=records)
+            status("ready", "ComfyUI 与所选模型已就绪", gpu="RTX PRO 6000", assets=records)
             return
         time.sleep(2)
     raise TimeoutError("ComfyUI 启动超时，请检查 server.log")

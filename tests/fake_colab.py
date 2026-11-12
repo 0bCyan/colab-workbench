@@ -1,5 +1,6 @@
 """In-process Colab + HTTP/WebSocket Comfy simulator. Never calls a cloud API."""
 import asyncio
+import base64
 import json
 import time
 
@@ -99,8 +100,9 @@ class FakeColab:
                         await socket.send_json({"type": "progress", "data": {"prompt_id": prompt_id, "value": step, "max": 4}})
                 if prompt_id not in self.pending[account]:
                     return
+                image = any(node['class_type'] == 'MiniMaxH3ImageConditioning' for node in body['prompt'].values())
                 self.histories[account][prompt_id] = {
-                    "outputs": {"16": {"images": [{"filename": "test.mp4", "subfolder": "workbench", "type": "output"}]}},
+                    "outputs": {"16": {"images": [{"filename": "test.png" if image else "test.mp4", "subfolder": "workbench", "type": "output"}]}},
                     "status": {"completed": True, "status_str": "success"},
                 }
                 self.pending[account].remove(prompt_id)
@@ -123,6 +125,8 @@ class FakeColab:
         @routes.get('/view')
         async def view(request):
             self.downloaded.append((account, time.time()))
+            if request.query.get('filename', '').endswith('.png'):
+                return web.Response(body=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII='), content_type='image/png')
             return web.FileResponse(ROOT / "tests/fixtures/synthetic.mp4")
 
         @routes.post('/api/jobs/{key}/cancel')

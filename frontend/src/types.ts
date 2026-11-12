@@ -7,7 +7,7 @@ export type Job = { deleted_at?: number | null; id: string; name: string; accoun
 export type Settings = { identity: string; idle_minutes: number; stop_on_exit: boolean }
 export type LLMConfig = { preset_id: string; context_tokens: number; gpu_memory: number; cpu_threads: number }
 export type LLMPreset = { id: string; name: string; engine: string; quantization: string; model: string; model_name: string; engine_version: string; size_gib: number; tier: string; reduced_refusal: boolean }
-export type LLMService = Machine & { id: string; account: string; config: LLMConfig; endpoint_path: string; model_name: string; active_requests: number }
+export type LLMService = Machine & { id: string; name: string; account: string; config: LLMConfig; endpoint_path: string; model_name: string; active_requests: number }
 export type State = { token: string; accounts: Account[]; jobs: Job[]; settings: Settings; drafts: { id: string; name: string; updated_at: number }[]; llm?: { presets: LLMPreset[]; services: LLMService[] } }
 
 export type MetricSample = {

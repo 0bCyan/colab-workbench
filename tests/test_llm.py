@@ -256,6 +256,7 @@ async def test_restart_retains_instance_endpoints_and_key_but_never_autostarts(t
         for key in ids:
             await start(llm, key)
         api_key = llm.key()
+        llm.rename(ids[0], '长期服务')
         sessions = [llm.machine(key)['session'] for key in ids]
         llm.log(ids[0], 'preserve this instance log')
         app.state.store.patch('settings', 'main', stop_on_exit=False)
@@ -264,6 +265,7 @@ async def test_restart_retains_instance_endpoints_and_key_but_never_autostarts(t
     async with app.router.lifespan_context(app):
         llm = app.state.llm
         assert llm.key() == api_key
+        assert llm.machine(ids[0])['name'] == '长期服务'
         assert [llm.machine(key)['session'] for key in ids] == sessions
         assert all(llm.machine(key)['phase'] == 'disconnected' for key in ids)
         assert [llm.public(key)['endpoint_path'] for key in ids] == [f'/llm/{key}/v1' for key in ids]
@@ -326,6 +328,7 @@ async def test_migrates_live_legacy_sessions_configs_and_logs_without_touching_c
         assert llm.resolve('colab2') == key
         assert llm.machine(key)['session'] == session
         assert llm.machine(key)['phase'] == 'disconnected'
+        assert llm.machine(key)['name']
         assert llm.store.get('llm_logs', key)[0]['message'] == 'legacy log'
         assert llm.model_name(key) == 'workbench-llm'
         await start(llm, key)
@@ -376,3 +379,33 @@ async def test_real_colab_adapter_isolates_ssh_tunnels_on_the_same_account(tmp_p
     assert children[1].returncode is None
     await driver.close()
     assert killed == [child.pid for child in children]
+
+
+async def test_instance_names_are_separate_from_model_identity_and_can_change_during_generation(rig):
+    llm, fake, client, _ = rig
+    result = await client.post('/api/llm/instances', json={'account': 'colab2', 'config': default_config(), 'name': '  日常助手  '})
+    assert result.status_code == 201 and result.json()['name'] == '日常助手'
+    key = result.json()['id']
+    first_auto, second_auto = create(llm), create(llm)
+    assert llm.machine(first_auto)['name'] != llm.machine(second_auto)['name']
+    llm.configure(key, 'colab2', {**default_config(), 'preset_id': 'qwen27-rana'})
+    assert llm.machine(key)['name'] == '日常助手'
+    llm.configure(first_auto, 'colab2', {**default_config(), 'preset_id': 'flash-iq3'})
+    assert 'Flash-Next' in llm.machine(first_auto)['name']
+    await start(llm, key)
+    identity = {k: llm.public(key)[k] for k in ('id', 'account', 'session', 'model_name', 'endpoint_path', 'config')}
+    fake.generation_gate = asyncio.Event()
+    generation = asyncio.create_task(client.post(f'/llm/{key}/v1/chat/completions', headers=auth(llm), json=payload(llm, key, stream=True)))
+    await fake.generation_started.wait()
+    calls = len(fake.calls)
+    response = await client.patch(f'/api/llm/{key}', json={'name': '  长文分析  '})
+    assert response.status_code == 200 and response.json()['name'] == '长文分析'
+    assert {k: response.json()[k] for k in identity} == identity
+    assert llm.active[key] == 1 and llm.machine(key)['phase'] == 'ready'
+    assert len(fake.calls) == calls
+    for invalid in ['', '   ', 'line\nbreak', 'x' * 81]:
+        assert (await client.patch(f'/api/llm/{key}', json={'name': invalid})).status_code in {400, 422}
+    fake.generation_gate.set()
+    assert (await generation).status_code == 200
+    assert llm.machine(key)['name'] == '长文分析'
+    assert llm.machine(second_auto)['name'] != '长文分析'

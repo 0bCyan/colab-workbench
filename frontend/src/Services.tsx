@@ -25,6 +25,7 @@ export default function Services({ state, account: defaultAccount, request, refr
   const [account, setAccount] = useState(service?.account ?? defaultAccount)
   const profile = state.accounts.find(a => a.id === account)
   const [config, setConfig] = useState<LLMConfig>(service?.config ?? defaults)
+  const [name, setName] = useState(service?.name ?? '')
   const [deleting, setDeleting] = useState(false)
   const [pending, setPending] = useState('')
   const [error, setError] = useState('')
@@ -43,6 +44,7 @@ export default function Services({ state, account: defaultAccount, request, refr
   const output = useRef<HTMLDivElement>(null)
   const savedDeployment = JSON.stringify({ account: service?.account ?? defaultAccount, config: service?.config ?? defaults })
   useEffect(() => { const saved = JSON.parse(savedDeployment); setConfig(saved.config); setAccount(saved.account); setError('') }, [selected, savedDeployment])
+  useEffect(() => { setName(service?.name ?? '') }, [selected, service?.name])
   useEffect(() => {
     ++serial.current
     controller.current?.abort()
@@ -66,6 +68,7 @@ export default function Services({ state, account: defaultAccount, request, refr
   const locked = !!service?.session || working || !!pending
   const available = !!profile?.installed && !!profile.credential_present
   const dirty = savedDeployment !== JSON.stringify({ account, config })
+  const nameDirty = !!service && !!name.trim() && name.trim() !== service.name
   const endpoint = service ? `${location.origin}${service.endpoint_path}` : ''
   const servedModel = service && !dirty ? service.model_name : recipe?.model_name ?? ''
   const runningInstances = services.filter(s => s.account === account && s.session).length
@@ -83,10 +86,13 @@ export default function Services({ state, account: defaultAccount, request, refr
     await act('key', async () => { const result = await request<{ key: string }>('/llm/key', 'POST'); await copy('密钥', result.key) })
   }
   async function save() {
-    if (service) await request(`/llm/${selected}/config`, 'PUT', { account, config })
+    if (service) {
+      if (dirty) await request(`/llm/${selected}/config`, 'PUT', { account, config })
+      if (nameDirty) await request(`/llm/${selected}`, 'PATCH', { name: name.trim() })
+    }
   }
   async function createInstance(start = false) {
-    const item = await request<LLMService>('/llm/instances', 'POST', { account, config })
+    const item = await request<LLMService>('/llm/instances', 'POST', { account, config, name: name.trim() || undefined })
     await refresh(); setSelected(item.id)
     if (start) await request(`/llm/${item.id}/start`, 'POST')
     else notify('服务实例已创建')
@@ -128,11 +134,12 @@ export default function Services({ state, account: defaultAccount, request, refr
   }
 
   return <>
-    <div className="service-toolbar"><label><Server size={15} /><select aria-label="服务实例" value={selected} disabled={!!pending} onChange={e => setSelected(e.target.value)}><option value="">新服务</option>{services.map(item => <option key={item.id} value={item.id}>{presets.find(p => p.id === item.config.preset_id)?.name ?? item.config.preset_id} · {item.account} · {item.id.slice(-4)} · {phaseLabel[item.phase]}</option>)}</select></label><div><button className="secondary" disabled={!!pending} onClick={() => { if (!selected) { setConfig({ ...defaults }); setAccount(defaultAccount) } setSelected('') }}><Plus size={14} />新建实例</button>{service && <button className="icon-button" aria-label="删除实例" title="删除实例" disabled={locked || !!service.active_requests} onClick={() => setDeleting(true)}><Trash2 size={15} /></button>}</div></div>
+    <div className="service-toolbar"><label><Server size={15} /><select aria-label="服务实例" value={selected} disabled={!!pending} onChange={e => setSelected(e.target.value)}><option value="">新建实例…</option>{services.map(item => <option key={item.id} value={item.id}>{item.name || presets.find(p => p.id === item.config.preset_id)?.name || item.config.preset_id} · {item.account} · {item.id.slice(-4)} · {phaseLabel[item.phase]}</option>)}</select></label><div><button className="secondary" disabled={!!pending} onClick={() => { if (!selected) { setConfig({ ...defaults }); setAccount(defaultAccount); setName('') } setSelected('') }}><Plus size={14} />新建实例</button>{service && <button className="icon-button" aria-label="删除实例" title="删除实例" disabled={locked || !!service.active_requests} onClick={() => setDeleting(true)}><Trash2 size={15} /></button>}</div></div>
     <nav className="mobile-tabs service-tabs" aria-label="服务工作区">{(['config', 'endpoint', 'compute'] as const).map((p, i) => <button key={p} className={mobile === p ? 'active' : ''} aria-pressed={mobile === p} onClick={() => setMobile(p)}>{['部署配置', '端点与测试', '算力与性能'][i]}</button>)}</nav>
     <div className={`services-grid service-mobile-${mobile}`}>
       <section className="panel service-config"><header className="panel-heading"><span><Server size={15} />模型配置</span><span className="subtle">LLM</span></header>
         <div className="service-config-body">
+          <div className="service-name-field"><label className="field"><span>实例名称</span><input aria-label="实例名称" value={name} onChange={e => setName(e.target.value)} maxLength={80} placeholder={recipe ? `${recipe.name} · 自动编号` : '为实例命名（可选）'} disabled={!!pending} /></label>{service && <button className="secondary" aria-label="保存实例名称" disabled={!!pending || !name.trim() || name.trim() === service.name} onClick={() => act('rename', async () => { await request(`/llm/${selected}`, 'PATCH', { name: name.trim() }); notify('实例名称已保存') })}>保存</button>}</div>
           <div className="service-presets" role="group" aria-label="模型预设">{presets.map(p => <button type="button" disabled={locked} key={p.id} aria-pressed={config.preset_id === p.id} onClick={() => setConfig({ ...config, preset_id: p.id })}>
             <span><strong>{p.name}</strong><Check size={14} /></span><small>{p.engine === 'vllm' ? 'vLLM' : p.engine} · {p.quantization}<i>{p.reduced_refusal ? '少拒答' : p.tier}</i></small>
           </button>)}</div>
@@ -141,7 +148,7 @@ export default function Services({ state, account: defaultAccount, request, refr
             <label className="field"><span>{recipe?.engine === 'llama.cpp' ? 'CPU 线程' : '显存预算'}</span>{recipe?.engine === 'llama.cpp' ? <select aria-label="CPU 线程" disabled={locked} value={config.cpu_threads} onChange={e => setConfig({ ...config, cpu_threads: Number(e.target.value) })}>{[8, 16, 24, 48].map(n => <option key={n} value={n}>{n}</option>)}</select> : <select aria-label="显存预算" disabled={locked} value={config.gpu_memory} onChange={e => setConfig({ ...config, gpu_memory: Number(e.target.value) })}>{[.8, .9, .95].map(n => <option key={n} value={n}>{Math.round(n * 100)}%</option>)}</select>}</label></div>
           <div className="service-runtime"><Cpu size={13} /><span>{recipe?.engine === 'vllm' ? 'vLLM' : recipe?.engine}</span><small>随模型自动配置</small></div><p className="service-hint">单实例单路 · 含输入与输出 · 待实机验收</p>
         </div>
-        <footer className="service-config-footer"><span>{recipe ? `权重约 ${recipe.size_gib.toFixed(1)} GiB` : '未选择模型'}</span><button className="text-button" disabled={locked || !available || !!service && !dirty} onClick={() => act('save', async () => { if (service) { await save(); notify('部署配置已保存') } else await createInstance() })}>{pending === 'save' ? '保存中…' : service ? '保存配置' : '创建实例'}<ChevronRight size={13} /></button></footer>
+        <footer className="service-config-footer"><span>{recipe ? `权重约 ${recipe.size_gib.toFixed(1)} GiB` : '未选择模型'}</span><button className="text-button" disabled={locked || !available || !!service && !dirty && !nameDirty} onClick={() => act('save', async () => { if (service) { await save(); notify('部署配置已保存') } else await createInstance() })}>{pending === 'save' ? '保存中…' : service ? '保存配置' : '创建实例'}<ChevronRight size={13} /></button></footer>
       </section>
 
       <section className="service-center">
@@ -166,12 +173,12 @@ export default function Services({ state, account: defaultAccount, request, refr
         <div className="usage-grid"><div><span>账号余额</span><strong>{profile?.usage?.balance?.toLocaleString('en-US', { maximumFractionDigits: 2 }) ?? '—'}<small> CU</small></strong></div><div><span>账号消耗</span><strong>{profile?.usage?.rate?.toFixed(2) ?? '—'}<small> /h</small></strong></div></div>
         <div className="service-machine-message" title={service?.message}>{service?.message ?? '创建一个独立的 LLM 服务实例'}</div>
         {runningInstances > 0 && <p className="service-account-load">当前账号运行 {runningInstances} 个服务实例</p>}
-        <button className="primary full" disabled={!available || !presets.length || !!pending || working || ready} onClick={() => act('start', async () => { if (!service) await createInstance(true); else { if (dirty) await save(); await request(`/llm/${selected}/start`, 'POST') } })}>{working ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{working ? service?.phase === 'stopping' ? '正在关闭…' : '正在准备…' : ready ? '服务已启动' : service?.session ? '重新连接 / 重试' : service ? '启动服务' : '创建并启动'}</button>
+        <button className="primary full" disabled={!available || !presets.length || !!pending || working || ready} onClick={() => act('start', async () => { if (!service) await createInstance(true); else { if (dirty || nameDirty) await save(); await request(`/llm/${selected}/start`, 'POST') } })}>{working ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{working ? service?.phase === 'stopping' ? '正在关闭…' : '正在准备…' : ready ? '服务已启动' : service?.session ? '重新连接 / 重试' : service ? '启动服务' : '创建并启动'}</button>
         {(service?.session || working) && <button className="stop-button" disabled={!!pending || !!service?.active_requests || testing || service?.phase === 'stopping'} onClick={() => act('stop', () => request(`/llm/${selected}/stop`, 'POST'))}><Power size={13} />关闭服务并释放机器</button>}
         <div className="compute-footer"><button className="text-button" disabled={!service} onClick={() => setLogs([])}><Terminal size={12} />服务日志</button><button className="text-button" onClick={openSettings}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
       </div></section>{service ? <Performance account={account} machine={service} metricsPath={`/api/llm/${service.id}/metrics`} metricsKey={service.id} /> : <Performance account={account} machine={{ phase: 'stopped', message: '尚未创建实例' }} metricsPath="/api/llm/uncreated/metrics" /> }</aside>
     </div>
-    {deleting && service && <Dialog title="删除服务实例" close={() => setDeleting(false)}><p>删除 {recipe?.name} · {service.id.slice(-4)} 的本地配置和日志？</p><footer><button className="secondary" onClick={() => setDeleting(false)}>取消</button><button className="primary" disabled={!!pending} onClick={() => act('delete', async () => { await request(`/llm/${selected}`, 'DELETE'); setSelected(''); setDeleting(false); notify('实例已删除') })}>删除实例</button></footer></Dialog>}
-    {logs !== null && <Dialog title={`${recipe?.name} · ${selected.slice(-4)}`} close={() => setLogs(null)} wide><div className="logs">{logs.length ? logs.map((l, i) => <div key={i}><time>{new Date(l.time * 1000).toLocaleTimeString()}</time><pre>{l.message}</pre></div>) : <div className="log-empty">启动服务后显示部署进度。</div>}</div></Dialog>}
+    {deleting && service && <Dialog title="删除服务实例" close={() => setDeleting(false)}><p>删除 {service.name || recipe?.name} · {service.id.slice(-4)} 的本地配置和日志？</p><footer><button className="secondary" onClick={() => setDeleting(false)}>取消</button><button className="primary" disabled={!!pending} onClick={() => act('delete', async () => { await request(`/llm/${selected}`, 'DELETE'); setSelected(''); setDeleting(false); notify('实例已删除') })}>删除实例</button></footer></Dialog>}
+    {logs !== null && <Dialog title={`${service?.name || recipe?.name} · ${selected.slice(-4)}`} close={() => setLogs(null)} wide><div className="logs">{logs.length ? logs.map((l, i) => <div key={i}><time>{new Date(l.time * 1000).toLocaleTimeString()}</time><pre>{l.message}</pre></div>) : <div className="log-empty">启动服务后显示部署进度。</div>}</div></Dialog>}
   </>
 }

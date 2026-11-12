@@ -96,3 +96,8 @@
 .service-presets { margin-top: 0 }
 .service-account-load { color: #7c8c70; font-size: 10px; margin-bottom: 9px }
 @media (max-width: 520px) { .service-toolbar { gap: 6px; margin-bottom: 8px }.service-toolbar > label > svg { display: none }.service-toolbar select { font-size: 10px; padding-left: 7px }.service-toolbar > div { gap: 4px }.service-toolbar .secondary { font-size: 10px; gap: 4px; padding: 6px 7px } }
+
+.service-name-field { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 14px; min-width: 0 }
+.service-name-field .field { flex: 1; min-width: 0; margin: 0 }
+.service-name-field input { width: 100%; min-width: 0; font-size: 12px }
+.service-name-field .secondary { flex: none; min-height: 35px; padding: 7px 10px; font-size: 11px }

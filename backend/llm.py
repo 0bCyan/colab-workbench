@@ -32,6 +32,8 @@ class LLM:
         self.migrate()
         for item in self.all():
             self.register(item["id"])
+            if not item.get("name"):
+                self.machine(item["id"], name=self.default_name(item["config"]["preset_id"], item["id"]), custom_name=False)
 
     def register(self, key):
         self.locks[key] = asyncio.Lock()
@@ -110,12 +112,33 @@ class LLM:
             raise ValueError("未知账号")
         validate_config(config)
 
-    def create(self, account, config):
+    def default_name(self, preset_id, exclude=None):
+        base = preset(preset_id)["name"]
+        used = {item.get("name") for item in self.all() if item["id"] != exclude}
+        number = 1
+        while f"{base} · {number}" in used:
+            number += 1
+        return f"{base} · {number}"
+
+    def validate_name(self, name):
+        name = name.strip()
+        if not name or len(name) > 80 or any(ord(char) < 32 or ord(char) == 127 for char in name):
+            raise ValueError("实例名称须为 1–80 个字符，不能包含换行或控制字符")
+        return name
+
+    def create(self, account, config, name=None):
         self.validate(account, config)
+        label = self.validate_name(name) if name is not None else self.default_name(config["preset_id"])
         key = "svc-" + uuid.uuid4().hex[:12]
         self.store.put(TABLE, key, {"id": key, "account": account, "phase": "stopped", "session": None,
+                                  "name": label, "custom_name": name is not None,
                                   "port": None, "message": "按需启动服务", "config": config, "created_at": time.time()})
         self.register(key)
+        return self.public(key)
+
+    def rename(self, key, name):
+        self.machine(key)
+        self.machine(key, name=self.validate_name(name), custom_name=True)
         return self.public(key)
 
     def configure(self, key, account, config):
@@ -125,7 +148,10 @@ class LLM:
             return self.public(key)
         if item.get("session") or item["phase"] in BUSY or key in self.stopping:
             raise ValueError("请先关闭此实例，再更换部署配置或账号")
-        self.machine(key, account=account, config=config, deployment=None, legacy_model=None)
+        changes = {}
+        if not item.get("custom_name") and config["preset_id"] != item["config"]["preset_id"]:
+            changes["name"] = self.default_name(config["preset_id"], key)
+        self.machine(key, account=account, config=config, deployment=None, legacy_model=None, **changes)
         return self.public(key)
 
     def delete(self, key):

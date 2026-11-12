@@ -71,6 +71,16 @@ class LLMDeployment(BaseModel):
     config: LLMConfig
 
 
+class LLMCreation(LLMDeployment):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class LLMName(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+
+
 def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=None):
     configured_profiles = account_profiles
     account_profiles = []
@@ -207,8 +217,12 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
         return await manager().telemetry.read(account)
 
     @app.post("/api/llm/instances", status_code=201)
-    async def llm_create(body: LLMDeployment):
-        return app.state.llm.create(body.account, body.config.model_dump())
+    async def llm_create(body: LLMCreation):
+        return app.state.llm.create(body.account, body.config.model_dump(), body.name)
+
+    @app.patch("/api/llm/{key}")
+    async def llm_rename(key, body: LLMName):
+        return app.state.llm.rename(key, body.name)
 
     @app.delete("/api/llm/{key}")
     async def llm_delete(key):

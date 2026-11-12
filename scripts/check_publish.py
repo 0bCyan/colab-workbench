@@ -26,7 +26,7 @@ PATTERNS = {
     'Google account address': re.compile(rb'[A-Za-z0-9._%+-]+@(?:gmail|googlemail)\.com\b', re.I),
     'Google OAuth client ID': re.compile(rb'\d{10,}-[a-z0-9]+\.apps\.googleusercontent\.com'),
     'personal home path': re.compile(rb'/(?:Users|home)/[A-Za-z0-9_.-]+/'),
-    'real workbench session ID': re.compile(rb'\bwb(?:llm)?-[0-9a-f]{8}-\d+-[0-9a-f]{6}\b'),
+    'real workbench session ID': re.compile(rb'\bwb(?:llm)?-[0-9a-f]{8}-\d+-(?:[0-9a-f]{12}-)?[0-9a-f]{6}\b'),
 }
 
 

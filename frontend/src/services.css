@@ -2,10 +2,6 @@
 .services-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(260px, 1fr) 270px; gap: 14px }
 .service-config, .service-center, .service-test { display: flex; flex-direction: column; min-height: 0; overflow: hidden }
 .service-config-body { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; padding: 14px }
-.service-kind { display: flex; padding: 3px; background: #edf2e6; border: 1px solid #e2e9d9; border-radius: 7px; gap: 4px; margin-bottom: 18px }
-.service-kind > * { display: flex; flex: 1; align-items: center; justify-content: center; gap: 5px; min-height: 32px; font-size: 11px; color: #77866b; white-space: nowrap }
-.service-kind > span { background: #fff; color: #4e6740; border-radius: 5px; box-shadow: 0 1px 4px #21391a08 }
-.service-kind button:hover { color: #4d6841 }
 .service-presets { display: flex; flex-direction: column; gap: 8px; margin: 15px 0 20px }
 .service-presets > button { text-align: left; border: 1px solid #e0e6d9; border-radius: 8px; padding: 13px 11px; background: #fdfefb; min-width: 0 }
 .service-presets > button > span { display: flex; justify-content: space-between; align-items: center; gap: 6px }
@@ -32,7 +28,8 @@
 .endpoint-value code { flex: 1; min-width: 0; font-family: ui-monospace, monospace; color: #587046; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all }
 .endpoint-value button { flex: none }
 .endpoint-details { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 12px 0 }
-.endpoint-details > span { font-size: 10px; color: #859179; white-space: nowrap }
+.endpoint-details > span { min-width: 0; font-size: 10px; color: #859179; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.endpoint-details button { flex: none }
 .endpoint-details code { font-size: 11px; color: #647c52; margin-left: 5px; user-select: all }
 .endpoint-details button { font-size: 11px }
 .service-test { flex: 1 }
@@ -87,5 +84,15 @@
   .service-center { gap: 9px }
   .service-presets { margin: 10px 0 12px; gap: 6px }
   .service-presets > button { padding: 10px }
-  .service-kind { margin-bottom: 12px }
 }
+
+.service-toolbar { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; min-width: 0 }
+.service-toolbar > label { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; color: #7c916b }
+.service-toolbar select { max-width: 440px; min-width: 0; width: 100%; background-color: #fafcf6; font-size: 12px }
+.service-toolbar > div { display: flex; align-items: center; gap: 8px; flex: none }
+.service-toolbar .secondary { min-height: 34px; padding: 7px 10px; font-size: 11px }
+.service-runtime { display: flex; align-items: center; gap: 6px; margin: 3px 0 12px; color: #6a815a; font-size: 11px }
+.service-runtime small { margin-left: auto; font-size: 9px; color: #8a997e }
+.service-presets { margin-top: 0 }
+.service-account-load { color: #7c8c70; font-size: 10px; margin-bottom: 9px }
+@media (max-width: 520px) { .service-toolbar { gap: 6px; margin-bottom: 8px }.service-toolbar > label > svg { display: none }.service-toolbar select { font-size: 10px; padding-left: 7px }.service-toolbar > div { gap: 4px }.service-toolbar .secondary { font-size: 10px; gap: 4px; padding: 6px 7px } }

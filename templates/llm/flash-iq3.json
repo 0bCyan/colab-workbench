@@ -1,0 +1,18 @@
+{
+  "id": "flash-iq3",
+  "name": "Qwen3.8 · Flash-Next",
+  "engine": "llama.cpp",
+  "quantization": "IQ3_S",
+  "model": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "files": [
+    "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"
+  ],
+  "size_gib": 77.88,
+  "tier": "均衡",
+  "reduced_refusal": false,
+  "order": 3,
+  "model_name": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "engine_version": "5d4c8eeb24db049acf74bd6f354bed6eaeffc7dc"
+}

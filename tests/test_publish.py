@@ -21,6 +21,7 @@ def test_blocks_private_artifacts_even_when_forced_into_git(path):
     b'test-account@' + b'gmail.com',
     b'wb-' + b'abcdef12-2-abcdef',
     b'wbllm-' + b'abcdef12-12-abcdef',
+    b'wbllm-' + b'abcdef12-12-abcdefabcdef-abcdef',
     b'/Users/' + b'local-user/.ssh/key',
 ])
 def test_reports_secret_type_without_echoing_value(payload):

@@ -79,8 +79,9 @@ class Colab:
     async def execute(self, account, session, script):
         return await self.command(account, "exec", "-s", session, "-f", str(script), "--timeout", "90", timeout=120)
 
-    async def tunnel(self, account, session, identity, service_port=8188):
-        await self.close_tunnel(account)
+    async def tunnel(self, account, session, identity, service_port=8188, tunnel_key=None):
+        key = tunnel_key or account
+        await self.close_tunnel(key)
         launcher = Path(self.launcher(account))
         first = launcher.read_text().splitlines()[0]
         python = first.removeprefix("#!").strip()
@@ -94,7 +95,7 @@ class Colab:
             monitor.bind(("127.0.0.1", 0))
             telemetry_port = monitor.getsockname()[1]
         proxy = shlex.join([python, str(ROOT / "backend/bridge.py"), str(launcher), session, identity])
-        log_path = self.directory / f"{account}-ssh.log"
+        log_path = self.directory / f"{key}-ssh.log"
         with log_path.open("ab") as log:
             proc = await asyncio.create_subprocess_exec(
                 "ssh", "-N", "-T", "-i", identity,
@@ -107,8 +108,8 @@ class Colab:
                 "-L", f"127.0.0.1:{telemetry_port}:127.0.0.1:8189", "root@colab-runtime",
                 stdout=log, stderr=log, start_new_session=True,
             )
-        self.tunnels[account] = proc
-        self.telemetry_ports[account] = telemetry_port
+        self.tunnels[key] = proc
+        self.telemetry_ports[key] = telemetry_port
         await asyncio.sleep(1)
         if proc.returncode is not None:
             raise RuntimeError(clean(log_path.read_text(errors="replace")))

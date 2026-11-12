@@ -1,0 +1,14 @@
+{
+  "id": "qwen27-fp8",
+  "name": "Qwen3.8 · 27B",
+  "engine": "vllm",
+  "quantization": "FP8",
+  "model": "Qwen/Qwen3.8-27B-FP8",
+  "revision": "c3a462cc3d38cf351f3b26cbd763469eeb74ef81",
+  "size_gib": 28.75,
+  "tier": "极速",
+  "reduced_refusal": false,
+  "order": 0,
+  "model_name": "Qwen/Qwen3.8-27B-FP8",
+  "engine_version": "0.33.0"
+}

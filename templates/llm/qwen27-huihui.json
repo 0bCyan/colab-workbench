@@ -1,0 +1,14 @@
+{
+  "id": "qwen27-huihui",
+  "name": "Qwen3.8 · 27B Huihui",
+  "engine": "vllm",
+  "quantization": "FP8",
+  "model": "munekazu/Huihui-Qwen3.8-27B-abliterated-FP8",
+  "revision": "badcb1961b646b3bdf1fc9ebdd9727826a55a48f",
+  "size_gib": 28.75,
+  "tier": "极速",
+  "reduced_refusal": true,
+  "order": 2,
+  "model_name": "munekazu/Huihui-Qwen3.8-27B-abliterated-FP8",
+  "engine_version": "0.33.0"
+}

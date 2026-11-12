@@ -17,14 +17,15 @@ function Meter({ label, percent, detail, history, color, icon }: { label: string
   return <div className="metric-card" aria-label={`${label}占用率`}><div className="metric-heading"><span>{icon}{label}</span><strong>{value(percent)}</strong></div><div className="metric-bar"><span style={{ width: `${percent == null ? 0 : Math.max(0, Math.min(100, percent))}%`, background: color }} /></div><div className="metric-bottom"><small title={detail}>{detail || '—'}</small><Sparkline samples={history} color={color} /></div></div>
 }
 
-export default function Performance({ account, machine, metricsPath }: { account: string; machine: Machine; metricsPath?: string }) {
+export default function Performance({ account, machine, metricsPath, metricsKey }: { account: string; machine: Machine; metricsPath?: string; metricsKey?: string }) {
   const [result, setResult] = useState<{ metrics: Metrics; received: number } | null>(null)
   const [clock, setClock] = useState(Date.now())
   useEffect(() => {
+    setResult(null)
+    if (!machine.session) return
     let active = true
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
-    setResult(null)
     const poll = async () => {
       try {
         const response = await fetch(metricsPath ?? `/api/accounts/${account}/metrics`, { signal: controller.signal })
@@ -39,7 +40,7 @@ export default function Performance({ account, machine, metricsPath }: { account
   }, [account, machine.session, machine.phase, metricsPath])
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 2000); return () => clearInterval(timer) }, [])
   const metrics = result?.metrics
-  const live = metrics?.account === account && metrics.session === machine.session && metrics.status === 'live' && clock - (result?.received ?? 0) < 8000 && machine.phase !== 'stopped'
+  const live = metrics?.account === (metricsKey ?? account) && metrics.session === machine.session && metrics.status === 'live' && clock - (result?.received ?? 0) < 8000 && machine.phase !== 'stopped'
   const s: MetricSample | null = live ? metrics.sample : null
   const history = live ? metrics.history : []
   const offline = !machine.session || machine.phase === 'stopped'

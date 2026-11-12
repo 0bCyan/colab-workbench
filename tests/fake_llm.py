@@ -1,5 +1,7 @@
 """Local inference simulator with real HTTP streaming; never contacts Colab."""
+import ast
 import asyncio
+import base64
 import json
 import time
 
@@ -14,50 +16,65 @@ class FakeLLM(FakeColab):
         if active is not None:
             self.active = active
         self.ready = set()
+        self.models = {}
+        self.quota_accounts = set()
         self.requests = []
         self.generation_gate = None
         self.generation_started = asyncio.Event()
         self.fail_deploy = False
 
+    async def create(self, account, session):
+        if account in self.quota_accounts:
+            self.calls.append((account, "create", session))
+            raise RuntimeError("maximum runtime limit reached")
+        return await super().create(account, session)
+
     async def execute(self, account, session, script):
         self.calls.append((account, "exec", session))
         if self.fail_deploy:
             return 'LLM_STATUS:{"phase":"error","message":"test: insufficient disk"}'
-        self.ready.add(account)
+        for node in ast.walk(ast.parse(script.read_text())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'write_bytes':
+                target = node.func.value
+                if isinstance(target, ast.BinOp) and isinstance(target.right, ast.Constant) and target.right.value == 'config.json':
+                    config = json.loads(base64.b64decode(node.args[0].args[0].value))
+                    self.models[session] = config['recipe']['model_name']
+        self.ready.add(session)
         return 'LLM_STATUS:{"phase":"ready","message":"test ready"}'
 
     async def stop(self, account, session):
         await super().stop(account, session)
-        self.ready.discard(account)
+        self.ready.discard(session)
 
-    async def tunnel(self, account, session, identity, service_port=8000):
+    async def tunnel(self, account, session, identity, service_port=8000, tunnel_key=None):
+        key = tunnel_key or account
         self.calls.append((account, "tunnel", session, service_port))
-        if account in self.ports:
-            return self.ports[account]
+        if key in self.ports:
+            return self.ports[key]
         routes = web.RouteTableDef()
 
         @routes.get('/v1/models')
         async def models(request):
-            if account not in self.ready:
+            if session not in self.ready:
                 raise web.HTTPServiceUnavailable()
-            return web.json_response({"object": "list", "data": [{"id": "workbench-llm"}]})
+            return web.json_response({"object": "list", "data": [{"id": self.models[session]}]})
 
         @routes.post('/v1/chat/completions')
         @routes.post('/v1/completions')
         async def generate(request):
             body = await request.json()
-            self.requests.append((account, body, dict(request.headers)))
+            self.requests.append((account, body, dict(request.headers), session))
             self.generation_started.set()
             if body.get('max_tokens') == -1:
                 return web.json_response({"error": {"message": "invalid max_tokens"}}, status=400)
             if not body.get('stream'):
                 if self.generation_gate:
                     await self.generation_gate.wait()
-                return web.json_response({"choices": [{"message": {"role": "assistant", "content": account}}]})
+                return web.json_response({"choices": [{"message": {"role": "assistant", "content": key}}]})
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
             try:
-                for content in ["你好，", f"来自 {account} 的测试服务。"]:
+                for content in ["你好，", f"来自 {key} 的测试服务。"]:
                     data = json.dumps({"choices": [{"delta": {"content": content}}]}, ensure_ascii=False)
                     await response.write(f'data: {data}\n\n'.encode())
                     if self.generation_gate:
@@ -87,7 +104,14 @@ class FakeLLM(FakeColab):
         await runner.setup()
         site = web.TCPSite(runner, '127.0.0.1', 0)
         await site.start()
-        self.servers[account] = runner
-        self.ports[account] = site._server.sockets[0].getsockname()[1]
-        self.telemetry_ports[account] = self.ports[account]
-        return self.ports[account]
+        self.servers[key] = runner
+        self.ports[key] = site._server.sockets[0].getsockname()[1]
+        self.telemetry_ports[key] = self.ports[key]
+        return self.ports[key]
+
+    async def close_tunnel(self, key):
+        self.telemetry_ports.pop(key, None)
+        self.ports.pop(key, None)
+        runner = self.servers.pop(key, None)
+        if runner:
+            await runner.cleanup()

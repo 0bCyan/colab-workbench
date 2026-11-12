@@ -1,0 +1,14 @@
+{
+  "id": "qwen27-rana",
+  "name": "Qwen3.8 · 27B RANA",
+  "engine": "vllm",
+  "quantization": "FP8",
+  "model": "abliterant/Qwen3.8-27B-RANA-abliterated-FP8",
+  "revision": "734456efab210cec52fbee771a87405572a5d413",
+  "size_gib": 28.75,
+  "tier": "极速",
+  "reduced_refusal": true,
+  "order": 1,
+  "model_name": "abliterant/Qwen3.8-27B-RANA-abliterated-FP8",
+  "engine_version": "0.33.0"
+}

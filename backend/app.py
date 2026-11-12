@@ -65,6 +65,12 @@ class LLMConfig(BaseModel):
     cpu_threads: Literal[8, 16, 24, 48] = 24
 
 
+class LLMDeployment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account: str
+    config: LLMConfig
+
+
 def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=None):
     configured_profiles = account_profiles
     account_profiles = []
@@ -79,7 +85,7 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
             store = Store(directory)
             # Keep live sessions visible even if their launcher was removed.
             account_profiles[:] = configured_profiles if configured_profiles is not None else profiles(
-                machine["account"] for machine in store.all("machines") + store.all("llm") if machine.get("session")
+                machine["account"] for machine in store.all("machines") + store.all("llm") + store.all("llm_instances") if machine.get("session")
             )
             colab = driver or Colab(account_profiles, directory)
             manager = Manager(store, colab, account_profiles)
@@ -159,7 +165,7 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
         jobs = sorted(store().all("jobs"), key=lambda j: j["created_at"], reverse=True)
         jobs = [{k: v for k, v in j.items() if k not in {"graph", "history"}} for j in jobs]
         return {"token": token, "accounts": accounts, "jobs": jobs,
-                "llm": {"presets": PRESETS, "services": [app.state.llm.public(p["id"]) for p in account_profiles]},
+                "llm": {"presets": PRESETS, "services": [app.state.llm.public(item["id"]) for item in app.state.llm.all()]},
                 "settings": store().get("settings", "main"),
                 "drafts": [{k: v for k, v in d.items() if k not in {"graph", "positions"}} for d in store().all("drafts")],
                 "preset": {"comfy_commit": COMFY_COMMIT, "model_revision": MODEL_REVISION, "models": MODEL_FILES}}
@@ -200,38 +206,47 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
     async def metrics(account):
         return await manager().telemetry.read(account)
 
-    @app.put("/api/llm/{account}/config")
-    async def llm_config(account, body: LLMConfig):
-        return app.state.llm.configure(account, body.model_dump())
+    @app.post("/api/llm/instances", status_code=201)
+    async def llm_create(body: LLMDeployment):
+        return app.state.llm.create(body.account, body.config.model_dump())
 
-    @app.post("/api/llm/{account}/start", status_code=202)
-    async def llm_start(account):
-        return app.state.llm.request_start(account)
+    @app.delete("/api/llm/{key}")
+    async def llm_delete(key):
+        return app.state.llm.delete(key)
 
-    @app.post("/api/llm/{account}/stop", status_code=202)
-    async def llm_stop(account):
-        return app.state.llm.request_stop(account)
+    @app.put("/api/llm/{key}/config")
+    async def llm_config(key, body: LLMDeployment):
+        return app.state.llm.configure(key, body.account, body.config.model_dump())
 
-    @app.get("/api/llm/{account}/logs")
-    async def llm_logs(account):
-        app.state.llm.machine(account)
-        return store().get("llm_logs", account, [])
+    @app.post("/api/llm/{key}/start", status_code=202)
+    async def llm_start(key):
+        return app.state.llm.request_start(key)
 
-    @app.get("/api/llm/{account}/metrics")
-    async def llm_metrics(account):
-        return await app.state.llm.telemetry.read(account)
+    @app.post("/api/llm/{key}/stop", status_code=202)
+    async def llm_stop(key):
+        return app.state.llm.request_stop(key)
+
+    @app.get("/api/llm/{key}/logs")
+    async def llm_logs(key):
+        app.state.llm.machine(key)
+        return store().get("llm_logs", key, [])
+
+    @app.get("/api/llm/{key}/metrics")
+    async def llm_metrics(key):
+        return await app.state.llm.telemetry.read(key)
 
     @app.post("/api/llm/key")
     async def llm_key():
         return {"key": app.state.llm.key()}
 
-    @app.api_route("/llm/{account}/v1/{route:path}", methods=["GET", "POST"])
-    async def llm_proxy(account: str, route: str, request: Request):
+    @app.api_route("/llm/{key}/v1/{route:path}", methods=["GET", "POST"])
+    async def llm_proxy(key: str, route: str, request: Request):
         llm = app.state.llm
         if (request.method, route) not in {("GET", "models"), ("POST", "chat/completions"), ("POST", "completions")}:
             raise HTTPException(404, "不支持的服务接口")
         try:
-            item = llm.machine(account)
+            key = llm.resolve(key)
+            item = llm.machine(key)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
         if item["phase"] != "ready" or not item.get("port"):
@@ -248,8 +263,8 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 payload = json.loads(b"".join(chunks))
             except (ValueError, UnicodeError) as exc:
                 raise HTTPException(400, "请求必须是 JSON") from exc
-            if not isinstance(payload, dict) or payload.get("model") != "workbench-llm":
-                raise HTTPException(400, "model 应为 workbench-llm")
+            if not isinstance(payload, dict) or payload.get("model") != llm.model_name(key):
+                raise HTTPException(400, "model 应为 " + llm.model_name(key))
         acquired = False
         upstream = None
 
@@ -259,12 +274,12 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 upstream.close()
             if acquired:
                 acquired = False
-                llm.release(account)
+                llm.release(key)
 
         request.state.llm_finish = finish
         try:
             if request.method == "POST":
-                item = llm.acquire(account)
+                item = llm.acquire(key)
                 acquired = True
             upstream = await llm.http.request(request.method, f"http://127.0.0.1:{item['port']}/v1/{route}",
                                               json=payload, timeout=aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=600),

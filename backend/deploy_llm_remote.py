@@ -23,7 +23,7 @@ def healthy():
     try:
         with urllib.request.urlopen("http://127.0.0.1:8000/v1/models", timeout=3) as response:
             body = json.load(response)
-        return any(item.get("id") == "workbench-llm" for item in body.get("data", []))
+        return any(item.get("id") == json.loads((ROOT / "config.json").read_text())["recipe"]["model_name"] for item in body.get("data", []))
     except Exception:
         return False
 
@@ -43,7 +43,7 @@ def serve():
                                  cache_dir=str(ROOT / "hf-cache"),
                                  allow_patterns=["*.json", "*.safetensors", "*.jinja", "*.txt", "*.model"])
         command = [sys.executable, "-m", "vllm.entrypoints.openai.api_server", "--model", path,
-                   "--served-model-name", "workbench-llm", "--host", "127.0.0.1", "--port", "8000",
+                   "--served-model-name", recipe["model_name"], "--host", "127.0.0.1", "--port", "8000",
                    "--max-model-len", str(config["context_tokens"]), "--max-num-seqs", "1",
                    "--gpu-memory-utilization", str(config["gpu_memory"]), "--kv-cache-dtype", "fp8",
                    "--enable-chunked-prefill", "--max-num-batched-tokens", "4096",
@@ -62,7 +62,7 @@ def serve():
             target.unlink(missing_ok=True)
             target.symlink_to(path)
         command = [str(ROOT / "llama.cpp/build/bin/llama-server"), "--model", str(model_dir / Path(recipe["files"][0]).name),
-                   "--alias", "workbench-llm", "--host", "127.0.0.1", "--port", "8000", "--parallel", "1",
+                   "--alias", recipe["model_name"], "--host", "127.0.0.1", "--port", "8000", "--parallel", "1",
                    "--ctx-size", str(config["context_tokens"]), "--n-gpu-layers", "99", "--flash-attn", "on",
                    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--threads", str(config["cpu_threads"]),
                    "--jinja", "--lazy-mode", "on", "--batch-size", "512", "--ubatch-size", "128"]
@@ -116,7 +116,7 @@ def main():
                 run([*uv, "venv", "--python", "3.12", ROOT / "venv"], env=env)
             packages = ["huggingface_hub==1.31.0"]
             if config["recipe"]["engine"] == "vllm":
-                packages.append("vllm==0.33.0")
+                packages.append("vllm==" + config["recipe"]["engine_version"])
             else:
                 packages.extend(["cmake==4.1.2", "ninja==1.13.0"])
             run([*uv, "pip", "install", "--python", python, *packages], env=env)
@@ -127,8 +127,8 @@ def main():
                 if not (source / ".git").exists():
                     run(["git", "-C", source, "init"])
                     run(["git", "-C", source, "remote", "add", "origin", "https://github.com/ggml-org/llama.cpp.git"])
-                run(["git", "-C", source, "fetch", "--depth", "1", "origin", config["llama_commit"]])
-                run(["git", "-C", source, "checkout", "--detach", config["llama_commit"]])
+                run(["git", "-C", source, "fetch", "--depth", "1", "origin", config["recipe"]["engine_version"]])
+                run(["git", "-C", source, "checkout", "--detach", config["recipe"]["engine_version"]])
                 run([python.parent / "cmake", "-S", source, "-B", source / "build", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=120", "-DLLAMA_CURL=OFF"])
                 run([python.parent / "cmake", "--build", source / "build", "--config", "Release", "-j", "8", "--target", "llama-server"])
             run([python, Path(__file__), "--serve"])

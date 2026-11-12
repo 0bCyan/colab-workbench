@@ -119,10 +119,18 @@ def test_stream_restore_checks_hashes_reuses_verified_files_and_rejects_corrupti
         root = tmp_path / 'restored'
         result = restore(broker, root, **kwargs)
         assert result['downloaded_bytes'] == index['total_bytes']
+        assert result['bytes'] == result['verified_bytes'] == index['total_bytes']
+        assert result['files_done'] == result['files_total'] == 2
+        assert result['rate_bytes_s'] > 0 and result['retries'] == 0
         assert (root / 'weights/model.bin').read_bytes() == blobs['weight']
         assert (root / 'runtime/hello.txt').read_text() == 'hello'
         reads.clear()
-        assert restore(broker, root, **kwargs)['downloaded_bytes'] == 0 and not reads
+        cached = restore(broker, root, **kwargs)
+        assert cached['downloaded_bytes'] == 0 and not reads
+        assert cached['cached_bytes'] == cached['bytes'] == index['total_bytes']
+        assert cached['files_done'] == 2
+        wide = restore(broker, tmp_path / 'wide', workers=128, api_base=base + '/files/')
+        assert wide['workers'] == 128 and wide['buffer_limit_bytes'] == 4 * 2**30
         corrupt[0] = True
         with pytest.raises(ValueError, match='SHA256'):
             restore(broker, tmp_path / 'corrupt', **kwargs)
@@ -131,3 +139,9 @@ def test_stream_restore_checks_hashes_reuses_verified_files_and_rejects_corrupti
         server.shutdown()
         server.server_close()
         worker.join()
+
+
+@pytest.mark.parametrize('workers', [0, 257, True, 1.5])
+def test_restore_rejects_invalid_parallelism_before_reading_credentials(tmp_path, workers):
+    with pytest.raises(ValueError, match='workers'):
+        restore(tmp_path / 'missing.json', tmp_path / 'out', workers=workers)

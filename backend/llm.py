@@ -3,6 +3,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import re
 import secrets
 import time
 import uuid
@@ -11,7 +12,14 @@ import aiohttp
 
 from .colab import clean
 from .config import ROOT
-from .llm_presets import LLM_ROOT, default_config, preset, validate_config
+from .llm_presets import (
+    LLM_ROOT,
+    default_config,
+    preset,
+    request_defaults,
+    validate_config,
+    validate_defaults,
+)
 from .telemetry import Telemetry
 
 BUSY = {"checking", "provisioning", "deploying", "stopping"}
@@ -33,6 +41,11 @@ class LLM:
         self.migrate()
         self.migrate_catalog()
         for item in self.all():
+            config = {**default_config(), **item['config']}
+            defaults = {**request_defaults(config['context_tokens']), **item.get('request_defaults', {})}
+            if defaults['reasoning_effort'] == 'high':
+                defaults['reasoning_effort'] = 'xhigh'
+            self.store.patch(TABLE, item['id'], config=config, request_defaults=defaults)
             self.register(item["id"])
             if not item.get("name"):
                 self.machine(item["id"], name=self.default_name(default_config()['preset_id'], item["id"]), custom_name=False)
@@ -149,12 +162,14 @@ class LLM:
         return name
 
     def create(self, account, config, name=None):
+        config = {**default_config(), **config}
         self.validate(account, config)
         label = self.validate_name(name) if name is not None else self.default_name(config["preset_id"])
         key = "svc-" + uuid.uuid4().hex[:12]
         self.store.put(TABLE, key, {"id": key, "account": account, "phase": "stopped", "session": None,
                                   "name": label, "custom_name": name is not None,
-                                  "port": None, "message": "按需启动服务", "config": config, "created_at": time.time()})
+                                  "port": None, "message": "按需启动服务", "config": config,
+                                  "request_defaults": request_defaults(config['context_tokens']), "created_at": time.time()})
         self.register(key)
         return self.public(key)
 
@@ -165,6 +180,7 @@ class LLM:
 
     def configure(self, key, account, config):
         item = self.machine(key)
+        config = {**default_config(), **config}
         self.validate(account, config)
         if config == item["config"] and account == item["account"]:
             return self.public(key)
@@ -173,8 +189,151 @@ class LLM:
         changes = {}
         if not item.get("custom_name") and config["preset_id"] != item["config"]["preset_id"]:
             changes["name"] = self.default_name(config["preset_id"], key)
-        self.machine(key, account=account, config=config, deployment=None, legacy_model=None, **changes)
+        defaults = {**request_defaults(config['context_tokens']), **item.get('request_defaults', {})}
+        defaults['max_tokens'] = min(defaults['max_tokens'], config['context_tokens'] - 1)
+        defaults['reasoning_budget_tokens'] = min(defaults['reasoning_budget_tokens'], defaults['max_tokens'])
+        self.machine(key, account=account, config=config, request_defaults=defaults, deployment=None, legacy_model=None, **changes)
         return self.public(key)
+
+    def configure_defaults(self, key, changes):
+        item = self.machine(key)
+        changes = dict(changes)
+        aliases = {'high': 'xhigh', 'max': 'xhigh', 'minimal': 'low'}
+        if changes.get('reasoning_effort') == 'none':
+            changes.update(thinking=False)
+            changes.pop('reasoning_effort')
+        elif changes.get('reasoning_effort') in aliases:
+            changes['reasoning_effort'] = aliases[changes['reasoning_effort']]
+        defaults = {**request_defaults(item['config']['context_tokens']), **item.get('request_defaults', {}), **changes}
+        validate_defaults(defaults, item['config']['context_tokens'])
+        self.machine(key, request_defaults=defaults)
+        return self.public(key)
+
+    def apply_defaults(self, key, payload, route):
+        """Map official Qwen controls to native Strata without replacing explicit client choices."""
+        item = self.machine(key)
+        defaults = {**request_defaults(item['config']['context_tokens']), **item.get('request_defaults', {})}
+        body = dict(payload)
+        if route == 'completions':
+            if 'max_tokens' not in body and 'max_completion_tokens' not in body:
+                body['max_tokens'] = defaults['max_tokens']
+            return body
+
+        template = body.get('chat_template_kwargs')
+        template = dict(template) if isinstance(template, dict) else {}
+        official_enable = body.pop('enable_thinking', None)
+        if 'enable_thinking' in payload:
+            if type(official_enable) is not bool:
+                raise ValueError('enable_thinking 必须是布尔值')
+            template.setdefault('enable_thinking', official_enable)
+        official_budget = body.pop('thinking_budget', None)
+        if 'thinking_budget' in payload:
+            if type(official_budget) is not int or official_budget < 0:
+                raise ValueError('thinking_budget 必须是非负整数')
+            if 'reasoning_effort' in payload or ('reasoning' in payload and isinstance(payload['reasoning'], dict) and 'effort' in payload['reasoning']):
+                raise ValueError('reasoning_effort 与 thinking_budget 不能同时使用')
+            body.setdefault('reasoning_budget_tokens', official_budget)
+            if not any(name in body for name in ('reasoning_effort', 'reasoning')) and 'reasoning_effort' not in template:
+                body['reasoning_effort'] = 'low' if official_budget <= 4096 else 'medium' if official_budget <= 16384 else 'xhigh'
+        aliases = {'high': 'xhigh', 'max': 'xhigh', 'minimal': 'low'}
+        if body.get('reasoning_effort') in aliases:
+            body['reasoning_effort'] = aliases[body['reasoning_effort']]
+        if template.get('reasoning_effort') in aliases:
+            template['reasoning_effort'] = aliases[template['reasoning_effort']]
+        if 'reasoning_effort' in body and body['reasoning_effort'] not in {'none', 'low', 'medium', 'xhigh'}:
+            raise ValueError('reasoning_effort 必须是 none、low、medium 或 xhigh')
+        if 'reasoning_effort' in template and template['reasoning_effort'] not in {'none', 'low', 'medium', 'xhigh'}:
+            raise ValueError('reasoning_effort 必须是 none、low、medium 或 xhigh')
+        preserve = body.pop('preserve_thinking', defaults['preserve_thinking'])
+        if type(preserve) is not bool:
+            raise ValueError('preserve_thinking 必须是布尔值')
+        if not preserve:
+            self.remove_historical_reasoning(body)
+
+        explicit = any(name in body for name in ('thinking', 'output_config', 'reasoning', 'reasoning_effort',
+                                                'reasoning_budget_tokens', 'thinking_budget_tokens')) or \
+            any(name in template for name in ('enable_thinking', 'reasoning_effort'))
+        if route in ('messages', 'messages/count_tokens'):
+            if route == 'messages':
+                body.setdefault('max_tokens', defaults['max_tokens'])
+            if not explicit:
+                if not defaults['thinking']:
+                    body['thinking'] = {'type': 'disabled'}
+                elif defaults['thinking_mode'] == 'budget':
+                    body['thinking'] = {'type': 'enabled', 'budget_tokens': defaults['reasoning_budget_tokens']}
+                else:
+                    body['thinking'] = {'type': 'adaptive'}
+                    body['output_config'] = {'effort': defaults['reasoning_effort']}
+            elif official_enable is False and 'thinking' not in body:
+                body['thinking'] = {'type': 'disabled'}
+            elif official_enable is True and 'thinking' not in body:
+                body['thinking'] = {'type': 'enabled'}
+            if 'thinking_budget' in payload and 'thinking' not in payload and official_enable is not False:
+                body['thinking'] = {'type': 'enabled', 'budget_tokens': official_budget}
+            if 'reasoning_effort' in body and 'output_config' not in body:
+                effort = body.pop('reasoning_effort')
+                if effort == 'none':
+                    body.setdefault('thinking', {'type': 'disabled'})
+                else:
+                    body['output_config'] = {'effort': effort}
+            if template and route.startswith('messages'):
+                # Anthropic normalization does not read chat_template_kwargs.
+                if template.get('enable_thinking') is False:
+                    body['thinking'] = {'type': 'disabled'}
+                elif 'reasoning_effort' in template and 'output_config' not in body:
+                    body['output_config'] = {'effort': template['reasoning_effort']}
+            if body.get('tools') and 'tool_choice' not in body:
+                body['tool_choice'] = {'type': 'auto' if defaults['tools_enabled'] else 'none',
+                                       'disable_parallel_tool_use': not defaults['parallel_tool_calls']}
+        else:
+            if route == 'responses':
+                body.setdefault('max_output_tokens', defaults['max_tokens'])
+            elif 'max_tokens' not in body and 'max_completion_tokens' not in body:
+                body['max_tokens'] = defaults['max_tokens']
+            if not explicit:
+                if defaults['thinking'] and defaults['thinking_mode'] == 'budget':
+                    budget = defaults['reasoning_budget_tokens']
+                    body['reasoning_budget_tokens'] = budget
+                    body['reasoning_effort'] = 'low' if budget <= 4096 else 'medium' if budget <= 16384 else 'xhigh'
+                elif route == 'responses':
+                    body['reasoning'] = {'effort': defaults['reasoning_effort'] if defaults['thinking'] else 'none'}
+                else:
+                    body['reasoning_effort'] = defaults['reasoning_effort'] if defaults['thinking'] else 'none'
+            if template:
+                if route == 'responses':
+                    if 'reasoning' not in body:
+                        if template.get('enable_thinking') is False:
+                            body['reasoning'] = {'effort': 'none'}
+                        elif 'reasoning_effort' in template:
+                            body['reasoning'] = {'effort': template['reasoning_effort']}
+                else:
+                    body['chat_template_kwargs'] = template
+            if route == 'responses' and 'reasoning_effort' in body:
+                body.setdefault('reasoning', {'effort': body.pop('reasoning_effort')})
+            if body.get('tools'):
+                body.setdefault('tool_choice', 'auto' if defaults['tools_enabled'] else 'none')
+                body.setdefault('parallel_tool_calls', defaults['parallel_tool_calls'])
+        return body
+
+    @staticmethod
+    def remove_historical_reasoning(body):
+        """Remove assistant thinking, preserving user text and every tool call/result envelope."""
+        def clean_message(message):
+            if not isinstance(message, dict) or message.get('role') != 'assistant':
+                return message
+            message = {name: value for name, value in message.items() if name not in ('reasoning_content', 'reasoning')}
+            content = message.get('content')
+            if isinstance(content, str):
+                message['content'] = re.sub(r'^\s*<think>.*?</think>\s*', '', content, count=1, flags=re.DOTALL)
+            elif isinstance(content, list):
+                message['content'] = [block for block in content if not isinstance(block, dict) or
+                                      block.get('type') not in ('thinking', 'redacted_thinking', 'reasoning')]
+            return message
+        if isinstance(body.get('messages'), list):
+            body['messages'] = [clean_message(message) for message in body['messages']]
+        if isinstance(body.get('input'), list):
+            body['input'] = [clean_message(message) for message in body['input']
+                             if not isinstance(message, dict) or message.get('type') != 'reasoning']
 
     def delete(self, key):
         item = self.machine(key)
@@ -204,7 +363,8 @@ class LLM:
         if self.bundles:
             self.bundles.require([preset(item['config']['preset_id'])['bundle_id']])
         if key not in self.tasks or self.tasks[key].done():
-            self.machine(key, phase="checking", message="核对此实例的云端会话")
+            self.machine(key, phase="checking", message="核对此实例的云端会话", deployment=None,
+                         loading_started_at=time.time())
             self.tasks[key] = asyncio.create_task(self.start(key))
         return self.public(key)
 
@@ -214,6 +374,7 @@ class LLM:
         files = {"deploy.py": (ROOT / "backend/deploy_llm_remote.py").read_bytes(),
                  "telemetry.py": (ROOT / "backend/telemetry_remote.py").read_bytes(),
                  "config.json": json.dumps(config).encode(),
+                 'llm_serve_remote.py': (ROOT / 'backend/llm_serve_remote.py').read_bytes(),
                  'bundle_restore_remote.py': (ROOT / 'backend/bundle_restore_remote.py').read_bytes()}
         code = "import base64,subprocess,sys\nfrom pathlib import Path\n" + f"root=Path({LLM_ROOT!r});root.mkdir(exist_ok=True,parents=True)\n"
         for name, data in files.items():
@@ -307,7 +468,7 @@ class LLM:
                         return
                     except (aiohttp.ClientError, TimeoutError, RuntimeError):
                         pass
-                    if time.monotonic() - checked > 12:
+                    if time.monotonic() - checked > 3:
                         output = await self.colab.execute(account, session, check)
                         self.log(key, output)
                         for line in output.splitlines():

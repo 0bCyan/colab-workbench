@@ -61,9 +61,24 @@ class ArtworkName(BaseModel):
 class LLMConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     preset_id: str
-    context_tokens: Literal[32768, 131072, 262144] = 262144
+    context_tokens: int = Field(default=262144, ge=4096, le=262144, strict=True)
     gpu_memory: Literal[0.8, 0.9, 0.95] = 0.9
-    cpu_threads: Literal[8, 12, 16, 24, 48] = 12
+    cpu_threads: int = Field(default=12, ge=1, le=48, strict=True)
+    cache_enabled: bool = Field(default=True, strict=True)
+    cache_mib: int = Field(default=4096, ge=0, le=8192, strict=True)
+    download_workers: int = Field(default=64, ge=1, le=256, strict=True)
+
+
+class LLMRequestDefaults(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    thinking: bool | None = Field(default=None, strict=True)
+    thinking_mode: Literal['effort', 'budget'] | None = None
+    reasoning_effort: Literal['low', 'medium', 'xhigh', 'high', 'max', 'minimal', 'none'] | None = None
+    reasoning_budget_tokens: int | None = Field(default=None, ge=0, le=262143, strict=True)
+    preserve_thinking: bool | None = Field(default=None, strict=True)
+    max_tokens: int | None = Field(default=None, ge=1, le=262143, strict=True)
+    tools_enabled: bool | None = Field(default=None, strict=True)
+    parallel_tool_calls: bool | None = Field(default=None, strict=True)
 
 
 class LLMDeployment(BaseModel):
@@ -136,7 +151,8 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 error = JSONResponse({"detail": "只允许本地工作台的同源请求"}, status_code=403)
             elif is_llm:
                 scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
-                if scheme.lower() != "bearer" or not secrets.compare_digest(supplied.encode(), app.state.llm.key().encode()):
+                supplied = supplied if scheme.lower() == 'bearer' else request.headers.get('x-api-key', '')
+                if not secrets.compare_digest(supplied.encode(), app.state.llm.key().encode()):
                     error = JSONResponse({"error": {"message": "服务密钥无效", "type": "authentication_error"}}, status_code=401)
             elif request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-workbench-token") != token:
                 error = JSONResponse({"detail": "工作台会话已变化，请刷新页面"}, status_code=403)
@@ -239,6 +255,10 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
     async def llm_config(key, body: LLMDeployment):
         return app.state.llm.configure(key, body.account, body.config.model_dump())
 
+    @app.put('/api/llm/{key}/defaults')
+    async def llm_defaults(key, body: LLMRequestDefaults):
+        return app.state.llm.configure_defaults(key, body.model_dump(exclude_unset=True))
+
     @app.post("/api/llm/{key}/start", status_code=202)
     async def llm_start(key):
         return app.state.llm.request_start(key)
@@ -263,7 +283,8 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
     @app.api_route("/llm/{key}/v1/{route:path}", methods=["GET", "POST"])
     async def llm_proxy(key: str, route: str, request: Request):
         llm = app.state.llm
-        if (request.method, route) not in {("GET", "models"), ("POST", "chat/completions"), ("POST", "completions")}:
+        if (request.method, route) not in {("GET", "models"), ("POST", "chat/completions"), ("POST", "completions"),
+                                           ('POST', 'responses'), ('POST', 'messages'), ('POST', 'messages/count_tokens')}:
             raise HTTPException(404, "不支持的服务接口")
         try:
             key = llm.resolve(key)
@@ -286,6 +307,10 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 raise HTTPException(400, "请求必须是 JSON") from exc
             if not isinstance(payload, dict) or payload.get("model") != llm.model_name(key):
                 raise HTTPException(400, "model 应为 " + llm.model_name(key))
+            try:
+                payload = llm.apply_defaults(key, payload, route)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
         acquired = False
         upstream = None
 
@@ -303,7 +328,9 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 item = llm.acquire(key)
                 acquired = True
             upstream = await llm.http.request(request.method, f"http://127.0.0.1:{item['port']}/v1/{route}",
-                                              json=payload, timeout=aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=600),
+                                              json=payload,
+                                              headers={name: request.headers[name] for name in ('anthropic-version', 'anthropic-beta') if name in request.headers},
+                                              timeout=aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=600),
                                               allow_redirects=False)
         except ValueError as exc:
             finish()

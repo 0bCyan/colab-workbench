@@ -61,12 +61,38 @@ class FakeLLM(FakeColab):
 
         @routes.post('/v1/chat/completions')
         @routes.post('/v1/completions')
+        @routes.post('/v1/responses')
+        @routes.post('/v1/messages')
+        @routes.post('/v1/messages/count_tokens')
         async def generate(request):
             body = await request.json()
             self.requests.append((account, body, dict(request.headers), session))
             self.generation_started.set()
+            if request.path.endswith('/messages/count_tokens'):
+                return web.json_response({'input_tokens': 123})
             if body.get('max_tokens') == -1:
                 return web.json_response({"error": {"message": "invalid max_tokens"}}, status=400)
+            if body.get('tools'):
+                call = {'id': 'call_synthetic', 'type': 'function',
+                        'function': {'name': 'lookup', 'arguments': '{"city":"杭州"}'}}
+                if request.path.endswith('/messages'):
+                    answer = {'type': 'message', 'content': [{'type': 'tool_use', 'id': call['id'],
+                              'name': 'lookup', 'input': {'city': '杭州'}}], 'stop_reason': 'tool_use'}
+                elif request.path.endswith('/responses'):
+                    answer = {'id': 'resp_synthetic', 'object': 'response', 'output': [
+                        {'type': 'function_call', 'call_id': call['id'], 'name': 'lookup',
+                         'arguments': call['function']['arguments']}]}
+                else:
+                    answer = {'choices': [{'message': {'role': 'assistant', 'content': None,
+                               'tool_calls': [call]}, 'finish_reason': 'tool_calls'}]}
+                if not body.get('stream'):
+                    return web.json_response(answer)
+                response = web.StreamResponse(headers={'Content-Type': 'text/event-stream'})
+                await response.prepare(request)
+                await response.write(('data: ' + json.dumps(answer, ensure_ascii=False) + '\n\n').encode())
+                await response.write(b'data: [DONE]\n\n')
+                await response.write_eof()
+                return response
             if not body.get('stream'):
                 if self.generation_gate:
                     await self.generation_gate.wait()

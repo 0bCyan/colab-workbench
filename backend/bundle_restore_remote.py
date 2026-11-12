@@ -37,14 +37,23 @@ def safe_path(root, name):
     return root / path
 
 def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www.googleapis.com/drive/v3/files/'):
+    if type(workers) is not int or not 1 <= workers <= 256:
+        raise ValueError('workers must be between 1 and 256')
+    if type(chunk_size) is not int or chunk_size < 1:
+        raise ValueError('chunk_size must be positive')
+    # Extra concurrency must not multiply the verified four-GiB payload buffer.
+    chunk_size = min(chunk_size, (4 << 30) // workers)
     started = time.perf_counter()
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     grant = json.loads(Path(broker).read_text())
     base = grant['base'].rstrip('/')
     auth, auth_lock, local = {}, threading.Lock(), threading.local()
+    metrics_lock = threading.Lock()
     status_path = root.parent / 'stream-restore-status.json'
-    summary = {'files': [], 'downloaded_bytes': 0, 'workers': workers, 'buffer_limit_bytes': workers*chunk_size}
+    summary = {'files': [], 'downloaded_bytes': 0, 'cached_bytes': 0, 'verified_bytes': 0,
+               'files_done': 0, 'workers': workers, 'buffer_limit_bytes': workers*chunk_size,
+               'requests': 0, 'retries': 0, 'http_errors': {}}
 
     def remote_json(name):
         for attempt in range(12):
@@ -71,6 +80,9 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
     def save(stage):
         summary['stage'] = stage
         summary['elapsed_seconds'] = time.perf_counter()-started
+        summary['bytes'] = summary['downloaded_bytes'] + summary['cached_bytes']
+        summary['rate_bytes_s'] = summary['downloaded_bytes'] / max(.001, summary['elapsed_seconds'])
+        summary['time'] = time.time()
         temporary = status_path.with_suffix('.tmp')
         temporary.write_text(json.dumps(summary))
         temporary.replace(status_path)
@@ -89,10 +101,17 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
             local.http = requests.Session()
         for attempt in range(3):
             try:
+                with metrics_lock:
+                    summary['requests'] += 1
                 with local.http.get(api_base+job['file_id'], params={'alt':'media'},
                                     headers=dict(headers(), Range=f'bytes={start}-{start+length-1}'),
                                     stream=True, timeout=(15, 40)) as response:
                     if response.status_code != 206:
+                        with metrics_lock:
+                            key = str(response.status_code)
+                            summary['http_errors'][key] = summary['http_errors'].get(key, 0) + 1
+                        if response.status_code in (403, 429):
+                            raise PermissionError('Drive download quota HTTP ' + str(response.status_code))
                         raise RuntimeError('Drive HTTP '+str(response.status_code))
                     data = bytearray()
                     for block in response.iter_content(1 << 20):
@@ -102,9 +121,13 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
                     if len(data) != length:
                         raise ValueError('Truncated range')
                     return data
+            except PermissionError:
+                raise
             except Exception:
                 if attempt == 2:
                     raise
+                with metrics_lock:
+                    summary['retries'] += 1
                 time.sleep(1+attempt)
 
     files = {job['name']:job for job in index['files']}
@@ -123,8 +146,10 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
         logical.append((assembly, parts))
     # The small runtime goes first; each remaining logical file uses all transfer workers.
     logical.sort(key=lambda item: (not bool(item[0].get('archive')), -item[0]['bytes']))
+    summary['files_total'] = len(logical)
     for target, parts in logical:
         relative = target['name'] if target.get('archive') else target['target']
+        summary['current'] = relative
         path = safe_path(root, relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         verified = root / '.bundle-verified' / target['sha256']
@@ -133,6 +158,10 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
                 stamp = json.loads(verified.read_text())
                 stat = path.stat()
                 if stamp == {'bytes': target['bytes'], 'mtime_ns': stat.st_mtime_ns} and stat.st_size == target['bytes']:
+                    summary['cached_bytes'] += target['bytes']
+                    summary['verified_bytes'] += target['bytes']
+                    summary['files_done'] += 1
+                    save('cached ' + relative)
                     continue
             except (ValueError, OSError):
                 pass
@@ -201,9 +230,13 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
             (root / '.runtime-ready').touch()
         verified.parent.mkdir(exist_ok=True)
         verified.write_text(json.dumps({'bytes': path.stat().st_size, 'mtime_ns': path.stat().st_mtime_ns}))
+        summary['verified_bytes'] += target['bytes']
+        summary['files_done'] += 1
+        save('verified ' + relative)
     (root/'bundle-manifest.json').write_text(json.dumps(index))
     summary['total_bytes'] = index['total_bytes']
     summary['restored'] = True
+    summary['current'] = None
     save('restored')
     (root.parent/'stream-restore-timings.json').write_text(json.dumps(summary, indent=2))
     return summary
@@ -215,8 +248,8 @@ if __name__ == '__main__':
     parser.add_argument('--workers', type=int, default=64)
     parser.add_argument('--mmap-experts', action='store_true', help='Use with the RAM layout to avoid a duplicate resident expert arena')
     args = parser.parse_args()
-    if not 1 <= args.workers <= 64:
-        parser.error('workers must be between 1 and 64')
+    if not 1 <= args.workers <= 256:
+        parser.error('workers must be between 1 and 256')
     restore(args.broker, args.root, args.workers)
     if args.mmap_experts:
         path = args.root/'preset.json'

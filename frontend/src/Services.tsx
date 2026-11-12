@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronRight, Cloud, Copy, Cpu, KeyRound, LoaderCircle, Play, Plus, Power, RefreshCw, Server, Square, Terminal, Trash2 } from 'lucide-react'
 import Dialog from './Dialog'
 import Performance from './Performance'
+import ServiceProgress from './ServiceProgress'
 import { type LLMConfig, type LLMService, type State, phaseLabel } from './types'
 import './services.css'
 
@@ -14,7 +15,9 @@ type Props = {
   openSettings: () => void
 }
 
-const defaults: LLMConfig = { preset_id: 'orca-flash-next-nvfp4-strata-mtp-g4-v1', context_tokens: 262144, gpu_memory: .9, cpu_threads: 12 }
+const defaults: LLMConfig = { preset_id: 'orca-flash-next-nvfp4-strata-mtp-g4-v1', context_tokens: 262144, gpu_memory: .9, cpu_threads: 12, cache_enabled: true, cache_mib: 4096, download_workers: 64 }
+const normalizeConfig = (config?: LLMConfig): LLMConfig => ({ ...defaults, ...config })
+type ToolCall = { id?: string; name: string; arguments: string }
 const busyPhases = new Set(['checking', 'provisioning', 'deploying', 'stopping'])
 
 export default function Services({ state, account: defaultAccount, request, refresh, notify, openSettings }: Props) {
@@ -24,7 +27,7 @@ export default function Services({ state, account: defaultAccount, request, refr
   const service = services.find(s => s.id === selected)
   const [account, setAccount] = useState(service?.account ?? defaultAccount)
   const profile = state.accounts.find(a => a.id === account)
-  const [config, setConfig] = useState<LLMConfig>(service?.config ?? defaults)
+  const [config, setConfig] = useState<LLMConfig>(normalizeConfig(service?.config))
   const [name, setName] = useState(service?.name ?? '')
   const [deleting, setDeleting] = useState(false)
   const [pending, setPending] = useState('')
@@ -34,6 +37,7 @@ export default function Services({ state, account: defaultAccount, request, refr
   const [mobile, setMobile] = useState<'config' | 'endpoint' | 'compute'>('endpoint')
   const [prompt, setPrompt] = useState('用一句话介绍自己。')
   const [outputLimits, setOutputLimits] = useState<Record<string, string>>({})
+  const [toolCalls, setToolCalls] = useState<ToolCall[]>([])
   const [answer, setAnswer] = useState('')
   const [reasoning, setReasoning] = useState('')
   const [testing, setTesting] = useState(false)
@@ -43,17 +47,17 @@ export default function Services({ state, account: defaultAccount, request, refr
   const currentSelection = useRef(selected)
   currentSelection.current = selected
   const output = useRef<HTMLDivElement>(null)
-  const savedDeployment = JSON.stringify({ account: service?.account ?? defaultAccount, config: service?.config ?? defaults })
+  const savedDeployment = JSON.stringify({ account: service?.account ?? defaultAccount, config: normalizeConfig(service?.config) })
   useEffect(() => { const saved = JSON.parse(savedDeployment); setConfig(saved.config); setAccount(saved.account); setError('') }, [selected, savedDeployment])
   useEffect(() => { setName(service?.name ?? '') }, [selected, service?.name])
   useEffect(() => {
     ++serial.current
     controller.current?.abort()
-    setAnswer(''); setReasoning(''); setTesting(false); setLogs(null); setPending(''); setCopied(''); setDeleting(false)
+    setAnswer(''); setReasoning(''); setToolCalls([]); setTesting(false); setLogs(null); setPending(''); setCopied(''); setDeleting(false)
     return () => { ++serial.current; controller.current?.abort() }
   }, [selected])
   useEffect(() => { if (copied) { const timer = setTimeout(() => setCopied(''), 2000); return () => clearTimeout(timer) } }, [copied])
-  useEffect(() => { output.current?.scrollTo({ top: output.current.scrollHeight }) }, [answer, reasoning])
+  useEffect(() => { if (answer || reasoning || toolCalls.length) output.current?.scrollTo({ top: output.current.scrollHeight }) }, [answer, reasoning, toolCalls])
   useEffect(() => {
     if (logs === null || !service) return
     let alive = true
@@ -71,15 +75,19 @@ export default function Services({ state, account: defaultAccount, request, refr
   const dirty = savedDeployment !== JSON.stringify({ account, config })
   const nameDirty = !!service && !!name.trim() && name.trim() !== service.name
   const outputKey = selected || 'new'
-  const outputText = outputLimits[outputKey] ?? '4096'
+  const outputText = outputLimits[outputKey] ?? String(service?.request_defaults?.max_tokens ?? 4096)
   const maxOutput = Number(outputText)
   const maxOutputAllowed = (service?.session ? service.config.context_tokens : config.context_tokens) - 1
   const outputValid = outputText.trim() !== '' && Number.isSafeInteger(maxOutput) && maxOutput >= 1 && maxOutput <= maxOutputAllowed
+  const configValid = Number.isInteger(config.context_tokens) && config.context_tokens >= 4096 && config.context_tokens <= 262144 && Number.isInteger(config.cpu_threads) && config.cpu_threads >= 1 && config.cpu_threads <= 48 && Number.isInteger(config.cache_mib) && (config.cache_mib ?? -1) >= 0 && (config.cache_mib ?? 8193) <= 8192
+  const outputDirty = outputValid && maxOutput !== (service?.request_defaults?.max_tokens ?? 4096)
+  const canSave = !!service && !pending && outputValid && configValid && (outputDirty || nameDirty || (!locked && dirty))
+  const requestOptions = { max_tokens: outputValid ? maxOutput : undefined }
   const outputError = `最大输出须为 1–${maxOutputAllowed.toLocaleString()} 的整数；输入和输出共用上下文。`
   const endpoint = service ? `${location.origin}${service.endpoint_path}` : ''
   const servedModel = service && !dirty ? service.model_name : recipe?.model_name ?? ''
   const runningInstances = services.filter(s => s.account === account && s.session).length
-  const curl = `curl '${endpoint}/chat/completions' \\\n  -H "Authorization: Bearer $WORKBENCH_API_KEY" \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: '你好' }], max_tokens: outputValid ? maxOutput : undefined, stream: true })}'`
+  const curl = `curl '${endpoint}/chat/completions' \\\n  -H "Authorization: Bearer $WORKBENCH_API_KEY" \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: '你好' }], ...requestOptions, stream: true })}'`
 
   async function act(label: string, task: () => Promise<unknown>) {
     const target = selected
@@ -94,12 +102,14 @@ export default function Services({ state, account: defaultAccount, request, refr
   }
   async function save() {
     if (service) {
-      if (dirty) await request(`/llm/${selected}/config`, 'PUT', { account, config })
+      if (dirty && !locked) await request(`/llm/${selected}/config`, 'PUT', { account, config })
+      if (outputDirty) await request(`/llm/${selected}/defaults`, 'PUT', { max_tokens: maxOutput })
       if (nameDirty) await request(`/llm/${selected}`, 'PATCH', { name: name.trim() })
     }
   }
   async function createInstance(start = false) {
     const item = await request<LLMService>('/llm/instances', 'POST', { account, config, name: name.trim() || undefined })
+    await request(`/llm/${item.id}/defaults`, 'PUT', { max_tokens: maxOutput })
     setOutputLimits(previous => ({ ...previous, [item.id]: outputText }))
     await refresh(); setSelected(item.id)
     if (start) await request(`/llm/${item.id}/start`, 'POST')
@@ -111,17 +121,18 @@ export default function Services({ state, account: defaultAccount, request, refr
     const turn = ++serial.current
     const abort = new AbortController()
     controller.current = abort
-    setTesting(true); setAnswer(''); setReasoning(''); setError('')
+    setTesting(true); setAnswer(''); setReasoning(''); setToolCalls([]); setError('')
     try {
       const { key } = await request<{ key: string }>('/llm/key', 'POST')
       if (abort.signal.aborted) return
       const response = await fetch(`${endpoint}/chat/completions`, { method: 'POST', signal: abort.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: prompt }], max_tokens: maxOutput, stream: true }) })
+        body: JSON.stringify({ model: servedModel, messages: [{ role: 'user', content: prompt }], ...requestOptions, stream: true }) })
       if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.error?.message ?? data.detail ?? '测试请求失败') }
       if (!response.body) throw new Error('浏览器不支持流式响应')
       const reader = response.body.getReader(), decoder = new TextDecoder()
       let buffer = '', received = false
+      const calls = new Map<number, ToolCall>()
       while (true) {
         const { value, done } = await reader.read()
         buffer += decoder.decode(value, { stream: !done })
@@ -132,12 +143,18 @@ export default function Services({ state, account: defaultAccount, request, refr
           if (data.error) throw new Error(data.error.message ?? '生成中断')
           const delta = data.choices?.[0]?.delta
           if (serial.current !== turn) return
+          for (const call of delta?.tool_calls ?? []) {
+            received = true
+            const previous = calls.get(call.index ?? 0) ?? { name: '', arguments: '' }
+            calls.set(call.index ?? 0, { id: call.id ?? previous.id, name: previous.name + (call.function?.name ?? ''), arguments: previous.arguments + (call.function?.arguments ?? '') })
+            setToolCalls([...calls.entries()].sort(([a], [b]) => a - b).map(([, value]) => ({ ...value })))
+          }
           if (typeof delta?.content === 'string') { received = true; setAnswer(previous => previous + delta.content) }
           if (typeof (delta?.reasoning_content ?? delta?.reasoning) === 'string') { received = true; setReasoning(previous => previous + (delta.reasoning_content ?? delta.reasoning)) }
         }
         if (done) break
       }
-      if (!received) throw new Error('服务没有返回文本，请检查部署日志')
+      if (!received) throw new Error('服务没有返回文本或工具调用，请检查日志')
     } catch (e) { if (!abort.signal.aborted && serial.current === turn) setError((e as Error).message) }
     finally { if (serial.current === turn) { setTesting(false); controller.current = null; refresh().catch(() => {}) } }
   }
@@ -153,10 +170,16 @@ export default function Services({ state, account: defaultAccount, request, refr
             <span><strong>{p.name}</strong><Check size={14} /></span><small>{p.engine === 'vllm' ? 'vLLM' : p.engine} · {p.quantization}<i>{p.reduced_refusal ? '少拒答' : p.tier}</i></small>
           </button>)}</div>
           {!presets.length && <p className="service-hint">请重启本地服务以加载模型预设</p>}
-          <div className="service-options"><label className="field"><span>总上下文</span><input aria-label="总上下文" value={`${config.context_tokens / 1024}K`} readOnly /></label><label className="field"><span>MTP / CPU 并行线程</span><input aria-label="MTP 与 CPU 并行线程" value={`4 / ${config.cpu_threads}`} readOnly /></label></div>
-          <div className="service-runtime"><Cpu size={13} /><span>{recipe?.engine === 'vllm' ? 'vLLM' : recipe?.engine}</span><small>随模型自动配置</small></div><p className="service-hint">单实例单路 · 权重直载内存 · 配方已验证</p>
+          <section className="service-settings-section" aria-label="生成参数"><header><span>生成</span><small>MTP 4</small></header>
+            <label className="field"><span>最大输出 <small>tokens</small></span><input aria-label="最大输出" type="number" inputMode="numeric" min={1} max={maxOutputAllowed} step={1} value={outputText} disabled={testing || !!pending} aria-invalid={!outputValid} onChange={e => { const value = e.target.value; setOutputLimits(previous => ({ ...previous, [outputKey]: value })); setError('') }} /></label>
+          </section>
+          <section className="service-settings-section" aria-label="部署参数"><header><span>部署</span><small>{locked ? '运行中' : '下次启动生效'}</small></header>
+            <label className="field service-context"><span>总上下文 <small>tokens</small></span><input aria-label="总上下文" type="number" min={4096} max={262144} step={1} value={config.context_tokens || ''} disabled={locked} onChange={e => setConfig({ ...config, context_tokens: Number(e.target.value) })} /><div className="service-context-presets">{[32768, 131072, 262144].map(value => <button type="button" key={value} disabled={locked} aria-pressed={config.context_tokens === value} onClick={() => setConfig({ ...config, context_tokens: value })}>{value / 1024}K</button>)}</div></label>
+            <div className="service-options"><label className="field"><span>CPU 并行线程</span><input aria-label="CPU 并行线程" type="number" min={1} max={48} step={1} value={config.cpu_threads || ''} disabled={locked} onChange={e => setConfig({ ...config, cpu_threads: Number(e.target.value) })} /></label><label className="field"><span>下载并发</span><select aria-label="下载并发" disabled={locked} value={config.download_workers} onChange={e => setConfig({ ...config, download_workers: Number(e.target.value) })}>{[64, 96, 128, 192, 256].map(value => <option key={value} value={value}>{value}</option>)}</select></label></div>
+            <div className="service-toggle-row"><label><span>缓存</span><input aria-label="启用缓存" type="checkbox" role="switch" checked={config.cache_enabled ?? true} disabled={locked} onChange={e => setConfig({ ...config, cache_enabled: e.target.checked })} /></label><label className="service-cache-size"><input aria-label="缓存容量" type="number" min={0} max={8192} step={256} value={config.cache_mib} disabled={locked || !config.cache_enabled} onChange={e => setConfig({ ...config, cache_mib: Number(e.target.value) })} /><small>MiB</small></label></div>
+          </section>
         </div>
-        <footer className="service-config-footer"><span>{recipe ? `权重约 ${recipe.size_gib.toFixed(1)} GiB` : '未选择模型'}</span><button className="text-button" disabled={locked || !available || !!service && !dirty && !nameDirty} onClick={() => act('save', async () => { if (service) { await save(); notify('部署配置已保存') } else await createInstance() })}>{pending === 'save' ? '保存中…' : service ? '保存配置' : '创建实例'}<ChevronRight size={13} /></button></footer>
+        <footer className="service-config-footer"><span>{recipe ? `${recipe.engine} · ${recipe.size_gib.toFixed(1)} GiB` : '未选择模型'}</span><button className="text-button" disabled={service ? !canSave : locked || !available || !configValid || !outputValid} onClick={() => act('save', async () => { if (service) { await save(); notify('设置已保存') } else await createInstance() })}>{pending === 'save' ? '保存中…' : service ? '保存配置' : '创建实例'}<ChevronRight size={13} /></button></footer>
       </section>
 
       <section className="service-center">
@@ -164,13 +187,13 @@ export default function Services({ state, account: defaultAccount, request, refr
           <div className="endpoint-body"><div className="service-title"><h2>{recipe?.name ?? '选择模型'}</h2><span>{recipe?.engine === 'vllm' ? 'vLLM' : recipe?.engine} · OpenAI 兼容</span></div>
             <div className="endpoint-value"><code title={endpoint}>{endpoint || '创建实例后生成端点'}</code><button className="icon-button" disabled={!endpoint} title="复制端点" aria-label="复制端点" onClick={() => copy('端点', endpoint)}>{copied === '端点' ? <Check size={15} /> : <Copy size={15} />}</button></div>
             <div className="endpoint-details"><span title={servedModel}>模型 <code>{servedModel}</code></span><button className="text-button" aria-label="复制服务密钥" disabled={!service || !!pending} onClick={copyKey}><KeyRound size={13} />{copied === '密钥' ? '密钥已复制' : '复制密钥'}</button></div>
-            <p className="service-hint">{service ? `独立端点 · ${service.account} · ${service.id.slice(-4)}` : '每个实例独立部署、独立调用'}</p>
+
           </div></div>
-        <div className="panel service-test"><header className="stage-heading"><div className="segmented"><button className={tab === 'test' ? 'active' : ''} onClick={() => setTab('test')}>连接测试</button><button className={tab === 'example' ? 'active' : ''} onClick={() => setTab('example')}>调用示例</button></div><label className="service-output-limit" title="最大生成 token 数；输入和输出共用上下文，可在服务运行时修改。"><span>最大输出</span><input aria-label="最大输出" type="number" inputMode="numeric" min={1} max={maxOutputAllowed} step={1} value={outputText} disabled={testing} aria-invalid={!outputValid} onChange={e => { const value = e.target.value; setOutputLimits(previous => ({ ...previous, [outputKey]: value })); setError('') }} /><small>tokens</small></label></header>
+        <div className="panel service-test"><header className="stage-heading"><div className="segmented"><button className={tab === 'test' ? 'active' : ''} onClick={() => setTab('test')}>连接测试</button><button className={tab === 'example' ? 'active' : ''} onClick={() => setTab('example')}>调用示例</button></div></header>
           {!outputValid && <div className="service-limit-error" role="alert">{outputError}</div>}
           {tab === 'example' ? <div className="service-example"><div><span>将密钥设置为 WORKBENCH_API_KEY</span><button className="icon-button" aria-label="复制调用示例" disabled={!endpoint || !outputValid} onClick={() => copy('调用示例', curl)}><Copy size={14} /></button></div><pre>{curl}</pre></div> : <>
-            <div ref={output} className="service-output" aria-label="测试响应" aria-live="polite">{answer || reasoning ? <>{reasoning && <details className="service-reasoning"><summary>思考过程</summary><pre>{reasoning}</pre></details>}{answer && <pre>{answer}</pre>}{testing && <span className="service-cursor" />}</> : <div className="service-test-empty"><Server size={27} strokeWidth={1.2} /><strong>{ready ? '服务已就绪' : working ? service?.message : '启动后即可调用'}</strong><span>{ready ? '发送一条消息，检查端点连接' : '选择配置，按需启动云端服务'}</span></div>}</div>
-            <form className="service-prompt" onSubmit={e => { e.preventDefault(); test() }}><textarea aria-label="测试消息" value={prompt} disabled={testing} onChange={e => setPrompt(e.target.value)} rows={2} maxLength={16000} /><div><small>{ready ? '测试使用当前运行的服务' : '服务就绪后可发送'}</small>{testing ? <button type="button" className="secondary" onClick={() => controller.current?.abort()}><Square size={13} />停止生成</button> : <button className="primary" disabled={!ready || !prompt.trim() || !outputValid || !!service?.active_requests}><Play size={13} />发送测试</button>}</div></form>
+            <div ref={output} className="service-output" aria-label="测试响应" aria-live="polite">{answer || reasoning || toolCalls.length ? <>{reasoning && <details className="service-reasoning"><summary>思考过程</summary><pre>{reasoning}</pre></details>}{answer && <pre>{answer}</pre>}{toolCalls.map((call, index) => <div className="service-tool-call" key={call.id ?? index}><strong>工具调用 · {call.name || '…'}</strong><pre>{call.arguments}</pre></div>)}{testing && <span className="service-cursor" />}</> : service && (working || service.phase === 'error') ? <ServiceProgress service={service} /> : <div className="service-test-empty"><Server size={27} strokeWidth={1.2} /><strong>{ready ? '服务已就绪' : working ? service?.message : '启动后即可调用'}</strong></div>}</div>
+            {!working && service?.phase !== 'error' && <form className="service-prompt" onSubmit={e => { e.preventDefault(); test() }}><textarea aria-label="测试消息" value={prompt} disabled={testing} onChange={e => setPrompt(e.target.value)} rows={2} maxLength={16000} /><div><small />{testing ? <button type="button" className="secondary" onClick={() => controller.current?.abort()}><Square size={13} />停止生成</button> : <button className="primary" disabled={!ready || !prompt.trim() || !outputValid || !!service?.active_requests}><Play size={13} />发送测试</button>}</div></form>}
           </>}
           {error && <div className="service-error" role="alert">{error}<button aria-label="关闭服务错误" className="icon-button" onClick={() => setError('')}>×</button></div>}
         </div>
@@ -182,7 +205,7 @@ export default function Services({ state, account: defaultAccount, request, refr
         <div className="usage-grid"><div><span>账号余额</span><strong>{profile?.usage?.balance?.toLocaleString('en-US', { maximumFractionDigits: 2 }) ?? '—'}<small> CU</small></strong></div><div><span>账号消耗</span><strong>{profile?.usage?.rate?.toFixed(2) ?? '—'}<small> /h</small></strong></div></div>
         <div className="service-machine-message" title={service?.message}>{service?.message ?? '创建一个独立的 LLM 服务实例'}</div>
         {runningInstances > 0 && <p className="service-account-load">当前账号运行 {runningInstances} 个服务实例</p>}
-        <button className="primary full" disabled={!available || !presets.length || !!pending || working || ready} onClick={() => act('start', async () => { if (!service) await createInstance(true); else { if (dirty || nameDirty) await save(); await request(`/llm/${selected}/start`, 'POST') } })}>{working ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{working ? service?.phase === 'stopping' ? '正在关闭…' : '正在准备…' : ready ? '服务已启动' : service?.session ? '重新连接 / 重试' : service ? '启动服务' : '创建并启动'}</button>
+        <button className="primary full" disabled={!available || !presets.length || !configValid || !outputValid || !!pending || working || ready} onClick={() => act('start', async () => { if (!service) await createInstance(true); else { if (dirty || nameDirty || outputDirty) await save(); await request(`/llm/${selected}/start`, 'POST') } })}>{working ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{working ? service?.phase === 'stopping' ? '正在关闭…' : '正在准备…' : ready ? '服务已启动' : service?.session ? '重新连接 / 重试' : service ? '启动服务' : '创建并启动'}</button>
         {(service?.session || working) && <button className="stop-button" disabled={!!pending || !!service?.active_requests || testing || service?.phase === 'stopping'} onClick={() => act('stop', () => request(`/llm/${selected}/stop`, 'POST'))}><Power size={13} />关闭服务并释放机器</button>}
         <div className="compute-footer"><button className="text-button" disabled={!service} onClick={() => setLogs([])}><Terminal size={12} />服务日志</button><button className="text-button" onClick={openSettings}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
       </div></section>{service ? <Performance account={account} machine={service} metricsPath={`/api/llm/${service.id}/metrics`} metricsKey={service.id} /> : <Performance account={account} machine={{ phase: 'stopped', message: '尚未创建实例' }} metricsPath="/api/llm/uncreated/metrics" /> }</aside>

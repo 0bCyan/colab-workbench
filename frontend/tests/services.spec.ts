@@ -23,8 +23,8 @@ test('models choose their runtime and multiple instances on one account keep sep
   await expect(page.getByRole('button', { name: '复制端点', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: /Flash-Next Uncensored · Strata MTP/ }).click()
   await expect(page.getByRole('heading', { name: 'Flash-Next Uncensored · Strata MTP', exact: true })).toBeVisible()
-  await expect(page.getByLabel('MTP 与 CPU 并行线程')).toBeVisible()
-  await expect(page.locator('.service-runtime')).toContainText('Strata')
+  await expect(page.getByLabel('CPU 并行线程')).toBeVisible()
+  await expect(page.locator('.service-config-footer')).toContainText('Strata')
   await expect(page.locator('.endpoint-details')).toContainText('orca-flash-next-nvfp4')
   await page.getByLabel('服务账号', { exact: true }).selectOption('colab1')
   await expect(page.getByLabel('服务实例', { exact: true }).locator('option:checked')).toHaveText('新建实例…')
@@ -40,13 +40,13 @@ test('models choose their runtime and multiple instances on one account keep sep
   expect(state.llm.services[0].name).toBe('日常助手')
   await page.getByRole('button', { name: /Flash-Next Uncensored · Strata MTP/ }).click()
   await expect(page.getByRole('heading', { name: 'Flash-Next Uncensored · Strata MTP', exact: true })).toBeVisible()
-  await expect(page.getByLabel('MTP 与 CPU 并行线程')).toBeVisible()
-  await expect(page.locator('.service-runtime')).toContainText('Strata')
-  await expect(page.getByLabel('总上下文')).toHaveValue('256K')
-  await expect(page.getByLabel('MTP 与 CPU 并行线程')).toHaveValue('4 / 12')
+  await expect(page.getByLabel('CPU 并行线程')).toBeVisible()
+  await expect(page.locator('.service-config-footer')).toContainText('Strata')
+  await expect(page.getByLabel('总上下文')).toHaveValue('262144')
+  await expect(page.getByLabel('CPU 并行线程')).toHaveValue('12')
   await page.getByRole('button', { name: '启动服务', exact: true }).click()
   await expect(page.getByText('服务已启动', { exact: true })).toBeVisible({ timeout: 15000 })
-  await expect(page.getByLabel('总上下文')).toHaveAttribute('readonly', '')
+  await expect(page.getByLabel('总上下文')).toBeDisabled()
   await expect(page.getByLabel('服务账号', { exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: '删除实例', exact: true })).toBeDisabled()
   await expect(page.getByLabel('GPU占用率')).toContainText('85%')
@@ -134,6 +134,7 @@ test('instance layout fits desktop and small screens, with zero or many accounts
     await expect(page.getByRole('button', { name: '新建实例', exact: true })).toBeInViewport()
     if (viewport.width < 1001) {
       await page.getByRole('button', { name: '部署配置', exact: true }).click()
+      await page.getByLabel('总上下文').scrollIntoViewIfNeeded()
       await expect(page.getByLabel('总上下文')).toBeInViewport()
       await page.getByRole('button', { name: '算力与性能', exact: true }).click()
     }
@@ -143,6 +144,8 @@ test('instance layout fits desktop and small screens, with zero or many accounts
     if (viewport.width < 1001) await page.getByRole('button', { name: '端点与测试', exact: true }).click()
     await expect(page.getByRole('button', { name: '复制端点', exact: true })).toBeInViewport()
     await expect(page.getByRole('button', { name: '发送测试', exact: true })).toBeInViewport()
+    if (viewport.width < 1001) await page.getByRole('button', { name: '部署配置', exact: true }).click()
+    await page.getByLabel('最大输出', { exact: true }).scrollIntoViewIfNeeded()
     await expect(page.getByLabel('最大输出', { exact: true })).toBeInViewport()
     expect(await page.evaluate(() => ({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }))).toEqual(viewport)
     await page.screenshot({ path: `../screenshots/review/service-instances-${viewport.width}x${viewport.height}.png` })
@@ -182,4 +185,95 @@ test('instance layout fits desktop and small screens, with zero or many accounts
     }
   }
   expect(errors).toEqual([])
+})
+
+test('deployment parameters and live request defaults save independently and tool-only streams render', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: '模型服务', exact: true }).click()
+  await page.getByLabel('实例名称', { exact: true }).fill('Agent 服务')
+  await page.getByLabel('总上下文', { exact: true }).fill('98304')
+  await page.getByLabel('CPU 并行线程', { exact: true }).fill('24')
+  await page.getByLabel('缓存容量', { exact: true }).fill('3072')
+  await page.getByLabel('下载并发', { exact: true }).selectOption('96')
+  await page.getByLabel('最大输出', { exact: true }).fill('8192')
+  await page.getByRole('button', { name: '创建实例', exact: true }).click()
+  await expect(page.getByLabel('服务实例', { exact: true })).toHaveValue(/^svc-/)
+  const id = await page.getByLabel('服务实例', { exact: true }).inputValue()
+  let state = await (await page.request.get('/api/state')).json()
+  let service = state.llm.services.find((item: { id: string }) => item.id === id)
+  expect(service.config).toMatchObject({ context_tokens: 98304, cpu_threads: 24, cache_enabled: true, cache_mib: 3072, download_workers: 96 })
+  expect(service.request_defaults.max_tokens).toBe(8192)
+  const hiddenDefaults = { ...service.request_defaults }; delete hiddenDefaults.max_tokens
+  await page.getByRole('button', { name: '启动服务', exact: true }).click()
+  await expect(page.getByText('服务已启动', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('总上下文', { exact: true })).toBeDisabled()
+  await expect(page.getByLabel('最大输出', { exact: true })).toBeEnabled()
+  const session = (await (await page.request.get('/api/state')).json()).llm.services.find((item: { id: string }) => item.id === id).session
+  await page.getByLabel('最大输出', { exact: true }).fill('4096')
+  await page.getByRole('button', { name: '保存配置', exact: true }).click()
+  await expect(page.getByText('设置已保存', { exact: true })).toBeVisible()
+  await page.reload()
+  await page.getByRole('button', { name: '模型服务', exact: true }).click()
+  await expect(page.getByLabel('最大输出', { exact: true })).toHaveValue('4096')
+  for (const label of ['思考模式', '思考深度', '思考控制方式', '思考预算', '保留历史思考', '工具调用']) await expect(page.getByLabel(label, { exact: true })).toHaveCount(0)
+  state = await (await page.request.get('/api/state')).json()
+  service = state.llm.services.find((item: { id: string }) => item.id === id)
+  expect(service.session).toBe(session)
+  expect(service.request_defaults).toEqual({ ...hiddenDefaults, max_tokens: 4096 })
+  await expect(page.locator('.service-test .stage-heading').getByLabel('最大输出', { exact: true })).toHaveCount(0)
+  await page.route(`**/llm/${id}/v1/chat/completions`, route => route.fulfill({
+    contentType: 'text/event-stream',
+    body: [
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-weather', type: 'function', function: { name: 'weather', arguments: '{"city":' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"上海"}' } }] }, finish_reason: 'tool_calls' }] },
+    ].map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n',
+  }))
+  const outgoing = page.waitForRequest(request => request.url().endsWith(`/llm/${id}/v1/chat/completions`))
+  await page.getByRole('button', { name: '发送测试', exact: true }).click()
+  const payload = (await outgoing).postDataJSON()
+  expect(payload).toEqual({ model: service.model_name, messages: [{ role: 'user', content: '用一句话介绍自己。' }], max_tokens: 4096, stream: true })
+  await expect(page.getByLabel('测试响应')).toContainText('工具调用 · weather')
+  await expect(page.getByLabel('测试响应')).toContainText('{"city":"上海"}')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await page.screenshot({ path: '../screenshots/review/service-agent-controls.png' })
+})
+
+test('startup panel shows measured download and independent environment progress without invented percentages', async ({ page }) => {
+  const state = await (await page.request.get('/api/state')).json()
+  const response = await page.request.post('/api/llm/instances', {
+    headers: { 'X-Workbench-Token': state.token },
+    data: { name: '加载进度', account: 'colab2', config: { preset_id: state.llm.presets[0].id, context_tokens: 262144, gpu_memory: .9, cpu_threads: 12 } },
+  })
+  expect(response.status()).toBe(201)
+  const id = (await response.json()).id
+  let failed = false
+  await page.route('**/api/state', async route => {
+    const data = await (await route.fetch()).json()
+    data.llm.services = data.llm.services.map((item: { id: string }) => item.id === id ? {
+      ...item, phase: failed ? 'error' : 'deploying', message: failed ? '下载连接中断' : '下载与环境并行准备',
+      deployment: { phase: failed ? 'error' : 'downloading', message: '并行准备', started_at: Date.now() / 1000 - 30, time: Date.now() / 1000,
+        stages: { environment: { status: 'running', message: '安装 Python 依赖' }, download: { status: 'running', bytes: 32 * 2 ** 30, total_bytes: 128 * 2 ** 30, elapsed_seconds: 30, rate_bytes_s: 512 * 2 ** 20, files_done: 2, files_total: 7, current: 'pack/experts.bin' } } },
+    } : item)
+    await route.fulfill({ json: data })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: '模型服务', exact: true }).click()
+  const panel = page.getByLabel('服务加载进度', { exact: true })
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText('安装 Python 依赖')
+  await expect(panel).toContainText('32.0 GiB / 128.0 GiB')
+  await expect(panel).toContainText('25.0%')
+  await expect(panel).toContainText('512 MiB/s')
+  await expect(panel).toContainText('2 / 7 文件')
+  await expect(panel).toContainText('experts.bin')
+  await expect(panel.locator('progress')).toHaveCount(1)
+  await expect(panel.getByLabel('权重下载进度')).toHaveAttribute('value', String(32 * 2 ** 30))
+  await page.screenshot({ path: '../screenshots/review/service-loading-stages.png' })
+  failed = true
+  await page.reload()
+  await page.getByRole('button', { name: '模型服务', exact: true }).click()
+  await expect(panel).toContainText('加载中断')
+  await expect(panel).toContainText('下载连接中断')
+  await expect(panel.locator('.spin')).toHaveCount(0)
+  await page.unroute('**/api/state')
 })

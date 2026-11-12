@@ -77,18 +77,18 @@ macOS 双击项目中的 **`启动工作台.command`**，或在项目目录运�
 | 模型 | `jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4` |
 | 固定 revision | `f24d2b68ff2814f24455ae86717be276619b5664` |
 | 引擎 | Strata，原生 MTP4 |
-| 总上下文 | 256K，输入与输出共享 |
-| CPU 并行度 | `OMP_NUM_THREADS=12` |
+| 总上下文 | 默认 256K，可填写 4096–262144 tokens，输入与输出共享 |
+| CPU 并行度 | 默认 `OMP_NUM_THREADS=12`，可填写 1–48 |
 | 完整部署包 | 七个文件，约 119.46 GiB，包含完整 PLE |
 | 可用内存要求 | 至少 155 GiB，使用 145 GiB 独立 tmpfs 与 mmap-experts |
 | API model | `orca-flash-next-nvfp4` |
 
-12 是已验证配方中的 OpenMP 并行度，不是虚拟机只有 12 个 vCPU，也不代表已经完成不同线程数的最优比较。配方参数暂时固定；模型与引擎随预设配置，不再手动组合。
+12 是 OpenMP 并行度，不是虚拟机的 vCPU 总数。G4 单路实测 8、12、16、24、48 线程的 128K 续聊约 250 token/s，差异很小，继续以 12 为默认。模型、量化和 MTP 随配方配置；上下文、CPU、缓存和下载并行度可以按实例修改，下次启动生效。
 
 1. 选择部署账号，填写可选实例名称。「创建实例」仅保存；「创建并启动」才申请 G4、并行准备环境和权重。
 2. 每个实例拥有独立机器、隧道、端点、日志及性能数据。同一账号可以新建多个实例，实际并发上限由 Colab 决定；账号内其他会话不会被接管或停止。
 3. 实例名称可以随时保存修改。重命名不改变实例 ID、端点或模型。已有旧配方实例在停止状态下迁移到当前配方；自定义名称、API 密钥、历史记录和实例端点保留。若旧实例仍有运行会话，保留原模型身份和关闭权限，释放后迁移。
-4. 服务就绪后，可复制端点、密钥，或发送流式连接测试。「最大输出」在运行期间可修改，默认 4096 tokens，立即影响下一次测试和调用示例；外部客户端仍通过 `max_tokens` 指定。
+4. 左侧提供最大输出，默认 4096 tokens，运行中可保存；测试和调用示例随编辑更新。思考开关、深度、预算及工具选择由 Codex、Claude 或其他调用端指定，工作台不重复提供这些控件。调用端显式参数优先，未指定输出上限时使用实例保存的默认值。
 5. 单实例同一时间处理一路请求；生成期间禁止释放。停止生成只取消当前请求。「关闭服务并释放机器」结束该实例的计算资源，关闭后端点返回 503；不会自动切换实例或重新开机。
 
 端点固定为 `http://127.0.0.1:8765/llm/<实例ID>/v1`。连接方式是本地调用方 → FastAPI → 实例专属 SSH 隧道 → Colab 的 Strata 服务。调用示例：
@@ -109,13 +109,23 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-支持 `/models`、`/chat/completions`、`/completions` 及流式响应。端点仅监听本机。服务密钥与 Google 登录凭证无关，保存在 `.data/`，不进入常规状态响应、浏览器本地存储或日志。重新打开工作台不自动申请 GPU；退出释放和空闲关机设置同时适用于视频和 LLM。
+支持 `/models`、`/chat/completions`、`/completions`、`/responses`、`/messages`、`/messages/count_tokens` 及对应流式响应。Responses 使用完整请求输入历史，不支持服务端保存后的响应检索。端点仅监听本机。服务密钥与 Google 登录凭证无关，保存在 `.data/`，不进入常规状态响应、浏览器本地存储或日志。重新打开工作台不自动申请 GPU；退出释放和空闲关机设置同时适用于视频和 LLM。
+
+模型服务的思考参数参考[阿里云官方接口](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。兼容 `enable_thinking`、`thinking_budget`、`preserve_thinking`，支持 `low / medium / xhigh` 三档，深度与预算互斥；官方深度别名 `high / max` 映射 `xhigh`，`minimal` 映射 `low`，`none` 关闭思考。预算模式依据官方阈值选择深度，并转换为本地引擎的 Token 上限，不声称自建服务与百炼托管调度完全相同。保留历史思考默认开启，需要调用端完整回传推理字段；关闭时不把已有历史推理送入模型，工具调用与工具结果仍保留。
+
+工具能力供 Codex、Claude 或其他 Agent 框架的调用端使用。模型接受调用方传入的工具定义和工具结果，返回结构化工具调用；调用端负责实际执行。OpenAI 风格使用 Bearer 密钥，Anthropic 风格还支持 `x-api-key` 和 `anthropic-version`，均使用同一本地服务密钥；不同客户端是否接受自定义模型端点取决于各自配置。本轮验证了真实模型的三个协议工具调用闭环，未将其表述为整个客户端应用的完整兼容验收。
+
+工具调用默认开启，模型可返回多个调用。当前引擎不会强制执行 `parallel_tool_calls=false` 的串行限制，因此页面不提供虚假的独立串行开关。工作台不执行工具，也不为不同调用端强制选择工具策略；调用端自己的 `tools`、`tool_choice`、工具调用 ID 和工具结果保持完整。
+
+缓存默认开启：前缀检查点，以及默认 4096 MiB、可配置 0–8192 MiB 的停放会话缓存。关闭缓存会禁用这两项，不等于清空当前活跃会话的全部 KV。128K 续聊实测命中约 130K 输入 token。缓存属于启动参数，修改后需先释放再重新启动该实例。
+
+加载时测试区域显示申请算力、安装环境、下载权重、加载模型、连接端点五阶段。环境和下载分别显示状态，下载展示真实字节、速率、文件数与百分比；其他阶段不估算百分比。没有加载任务时继续提供测试输入。
 
 ## 云盘权重与并行初始化
 
 原版 Fieldwork 仅提供 LLM 和 H3 视频两条部署路线。两者都已接入私有云盘权重清单：模型字节由云盘直接进入 Colab 的内存文件系统，本机只保留小型索引和控制数据。环境不制作成 Python 镜像；H3 在下载时安装 ComfyUI，LLM 在引擎/脚本归档恢复后安装轻量 Python 依赖，同时继续下载权重。
 
-下载通过现有 SSH 通道提供临时只读授权，不公开下载代理，不把长期云盘刷新凭证发送到 GPU。最多 64 路有界 Range 下载，逐文件完整 SHA256 校验，通过后才提交可加载文件。LLM 直接读取完整 PLE，不重组分片；H3 的四个权重也直接恢复到独立 tmpfs。内存不足、缺少索引或授权时明确报错；本地配置检查在申请 GPU 之前执行。
+下载通过现有 SSH 通道提供临时只读授权，不公开下载代理，不把长期云盘刷新凭证发送到 GPU。默认 64 路、可配置 1–256 路有界 Range 下载，内存中的分块负载上限保持 4 GiB，逐文件完整 SHA256 校验，通过后才提交可加载文件。LLM 直接读取完整 PLE，不重组分片；H3 的四个权重也直接恢复到独立 tmpfs。内存不足、缺少索引或授权时明确报错；本地配置检查在申请 GPU 之前执行。
 
 私有索引保存在 `.data/cloud/`，实际云盘文件 ID、账号授权和模型不随代码发布。首次安装可导入自己已校验的索引：
 
@@ -124,7 +134,7 @@ uv run python scripts/import_bundle.py /path/to/orca-flash-next-nvfp4-strata-mtp
 uv run python scripts/import_bundle.py /path/to/h3-video-g4-v1.json
 ```
 
-还需 rclone 独立的 `reader` remote，使用 `scope = drive.readonly`；默认授权文件为用户目录下 `.local/share/llm-workbench/drive-reader.conf`。可通过 `WORKBENCH_DRIVE_READER`、`WORKBENCH_RCLONE` 覆盖位置。Colab CLI 登录与云盘读取授权分别管理。清单导入及模型设置不会申请机器。
+还需 rclone 独立的 `reader` remote，使用 `scope = drive.readonly`；默认授权文件为用户目录下 `.local/share/llm-workbench/drive-reader.conf`。可通过 `WORKBENCH_DRIVE_READER`、`WORKBENCH_RCLONE` 覆盖位置。Colab CLI 登录与云盘读取授权分别管理。清单导入及模型设置不会申请机器。64／96／128／192／256 路均完成两轮 8 GiB 顺序校验下载，全部无重试或 HTTP 错误；96 路略快，256 路明显变慢。该短样本未确定绝对稳定极限，默认继续采用完整模型恢复已验证的 64 路；高并发由用户按需选择。
 
 ## 作品管理与性能看板
 

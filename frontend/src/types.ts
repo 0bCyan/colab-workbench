@@ -1,13 +1,15 @@
 export type GraphNode = { class_type: string; inputs: Record<string, unknown>; _meta?: { title?: string } }
 export type Graph = Record<string, GraphNode>
 export type Draft = { name: string; graph: Graph; positions: Record<string, { x: number; y: number }> }
-export type Machine = { phase: string; session?: string; message: string; port?: number; created_at?: number; last_activity?: number; deployment?: { phase: string; file_index?: number }; stats?: unknown }
+export type DeploymentProgress = { phase: string; message?: string; file_index?: number; started_at?: number; time?: number; stages?: { environment?: { status: string; message?: string }; download?: { status: string; bytes?: number; total_bytes?: number; elapsed_seconds?: number; rate_bytes_s?: number; files_done?: number; files_total?: number; current?: string } } }
+export type Machine = { phase: string; session?: string; message: string; port?: number; created_at?: number; last_activity?: number; deployment?: DeploymentProgress; stats?: unknown }
 export type Account = { id: string; label: string; installed: boolean; credential_present: boolean; machine: Machine; usage?: { balance: number | null; rate: number | null; active: number | null }; sessions?: { name: string; hardware: string }[]; error?: string; checked_at?: number }
 export type Job = { deleted_at?: number | null; id: string; name: string; account: string; status: string; message: string; created_at: number; started_at?: number; ended_at?: number; progress?: number; stop_after: boolean; outputs: { filename: string; url: string; bytes: number }[]; graph?: Graph }
 export type Settings = { identity: string; idle_minutes: number; stop_on_exit: boolean }
-export type LLMConfig = { preset_id: string; context_tokens: number; gpu_memory: number; cpu_threads: number }
+export type LLMConfig = { preset_id: string; context_tokens: number; gpu_memory: number; cpu_threads: number; cache_enabled?: boolean; cache_mib?: number; download_workers?: number }
+export type LLMRequestDefaults = { thinking: boolean; thinking_mode: 'effort' | 'budget'; preserve_thinking: boolean; reasoning_effort: 'low' | 'medium' | 'xhigh'; reasoning_budget_tokens: number; max_tokens: number; tools_enabled: boolean; parallel_tool_calls: boolean }
 export type LLMPreset = { id: string; name: string; engine: string; quantization: string; model: string; model_name: string; engine_version: string; size_gib: number; tier: string; reduced_refusal: boolean }
-export type LLMService = Machine & { id: string; name: string; account: string; config: LLMConfig; endpoint_path: string; model_name: string; active_requests: number }
+export type LLMService = Machine & { id: string; name: string; account: string; config: LLMConfig; request_defaults?: LLMRequestDefaults; endpoint_path: string; model_name: string; active_requests: number }
 export type State = { bundles?: { id: string; available: boolean; bytes: number }[]; token: string; accounts: Account[]; jobs: Job[]; settings: Settings; drafts: { id: string; name: string; updated_at: number }[]; llm?: { presets: LLMPreset[]; services: LLMService[] } }
 
 export type MetricSample = {

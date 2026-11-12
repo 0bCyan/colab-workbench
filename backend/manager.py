@@ -82,7 +82,7 @@ class Manager:
         preset = media_preset(model)
         if hasattr(self.colab, 'validate_connection'):
             self.colab.validate_connection(self.store.get('settings', 'main')['identity'])
-        if self.bundles:
+        if self.bundles and preset['bundle']:
             self.bundles.require([preset['bundle']])
         if account in self.stopping:
             raise ValueError("机器正在停止，请稍候")
@@ -146,7 +146,8 @@ class Manager:
                     self.log(account, f"额度刷新暂时失败，部署继续：{exc}")
                 deploy = (ROOT / "backend/deploy_remote.py").read_bytes()
                 telemetry = (ROOT / "backend/telemetry_remote.py").read_bytes()
-                cloud = self.bundles.lease(account, [media_preset(model)['bundle']]) if self.bundles else None
+                preset = media_preset(model)
+                cloud = self.bundles.lease(account, [preset['bundle']]) if self.bundles and preset['bundle'] else None
                 if cloud:
                     cloud['bundle_id'] = media_preset(model)['bundle']
                 bootstrap = self.store.directory / f"{account}-bootstrap.py"
@@ -157,8 +158,9 @@ class Manager:
                     f"(root/'deploy-status.json').write_text({json.dumps({'phase': 'starting', 'model': model})!r})\n"
                     f"(root/'deploy_remote.py').write_bytes(base64.b64decode({base64.b64encode(deploy).decode()!r}))\n"
                     f"(root/'telemetry_remote.py').write_bytes(base64.b64decode({base64.b64encode(telemetry).decode()!r}))\n"
-                    + (f"(root/'bundle_restore_remote.py').write_bytes(base64.b64decode({base64.b64encode((ROOT / 'backend/bundle_restore_remote.py').read_bytes()).decode()!r}))\n"
-                       f"(root/'bundle-config.json').write_text({json.dumps(cloud)!r})\n" if cloud else '') +
+                    f"(root/'bundle_restore_remote.py').write_bytes(base64.b64decode({base64.b64encode((ROOT / 'backend/bundle_restore_remote.py').read_bytes()).decode()!r}))\n"
+                    + (f"(root/'public-weights.json').write_text({(ROOT / 'templates' / preset['manifest']).read_text()!r})\n" if preset.get('manifest') else "(root/'public-weights.json').unlink(missing_ok=True)\n")
+                    + (f"(root/'bundle-config.json').write_text({json.dumps(cloud)!r})\n" if cloud else "(root/'bundle-config.json').unlink(missing_ok=True)\n") +
                     "with (root/'telemetry.log').open('ab') as log:\n"
                     " subprocess.Popen([sys.executable,str(root/'telemetry_remote.py')],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)\n"
                     "with (root/'deploy.log').open('ab') as log:\n"
@@ -240,7 +242,7 @@ class Manager:
     def submit(self, account, graph, name, stop_after):
         validate_graph(graph)
         model = graph_model(graph)
-        if self.bundles:
+        if self.bundles and media_preset(model)['bundle']:
             self.bundles.require([media_preset(model)['bundle']])
         self.machine(account)
         if account in self.stopping:

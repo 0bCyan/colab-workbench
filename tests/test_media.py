@@ -15,6 +15,26 @@ def image_graph():
     return json.loads((ROOT / 'templates/h3-image.json').read_text())
 
 
+async def test_bf16_profile_uses_public_weights_without_drive_and_preserves_graph(tmp_path):
+    from backend.bundles import Bundles
+    graph = json.loads((ROOT / 'templates/h3-image-bf16.json').read_text())
+    assert graph_model(graph) == 'minimax-image-bf16'
+    store, fake = Store(tmp_path), FakeColab(delay=.05)
+    manager = Manager(store, fake, PROFILES, Bundles(tmp_path))
+    await manager.open()
+    try:
+        job = manager.submit('colab2', graph, 'BF16', False)
+        await eventually(lambda: manager.job(job['id'])['status'] == 'completed')
+        assert manager.machine('colab2')['loaded_models'] == ['minimax-image-bf16']
+        bootstrap = (tmp_path / 'colab2-bootstrap.py').read_text()
+        assert 'public-weights.json' in bootstrap and 'https://huggingface.co/' in bootstrap
+        assert "(root/'bundle-config.json').unlink" in bootstrap
+        assert fake.prompt_posts[0][1]['prompt']['2']['inputs']['clip_name'].endswith('_bf16.safetensors')
+    finally:
+        await manager.close()
+        store.close()
+
+
 def test_image_resolution_rejects_low_res_and_checks_area():
     graph = image_graph()
     assert graph_model(validate_graph(graph)) == 'minimax-image'

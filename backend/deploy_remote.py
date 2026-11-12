@@ -34,7 +34,7 @@ IMAGE_FILES = [
 def selected_model():
     config = ROOT / 'media-config.json'
     model = json.loads(config.read_text())['model'] if config.exists() else 'minimax-h3'
-    if model not in {'minimax-h3', 'minimax-image'}:
+    if model not in {'minimax-h3', 'minimax-image', 'minimax-image-bf16'}:
         raise ValueError('未知创作模型')
     return model
 
@@ -62,28 +62,40 @@ def healthy():
 def restore_cloud_weights():
     import requests
 
-    cloud = json.loads((ROOT / 'bundle-config.json').read_text())
-    key = 'h3-image-g4-v1' if selected_model() == 'minimax-image' else 'h3-video-g4-v1'
-    response = requests.get(cloud['base'] + '/' + key + '.json', timeout=30)
-    response.raise_for_status()
-    index = response.json()
+    public = selected_model() == 'minimax-image-bf16'
+    key = 'minimax-image-bf16' if public else 'h3-image-g4-v1' if selected_model() == 'minimax-image' else 'h3-video-g4-v1'
+    cloud = None
+    if public:
+        index = json.loads((ROOT / 'public-weights.json').read_text())
+    else:
+        cloud = json.loads((ROOT / 'bundle-config.json').read_text())
+        response = requests.get(cloud['base'] + '/' + key + '.json', timeout=30)
+        response.raise_for_status()
+        index = response.json()
     if not index.get('weights_only') or index.get('preset') != key:
         raise ValueError('需要对应 H3 模型的纯权重部署包')
     weights = ROOT / 'weights'
+    available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
+                     if line.startswith('MemAvailable:'))
+    missing = sum(item['bytes'] for item in index['files'] if not (ROOT / item['target']).is_file()
+                  or (ROOT / item['target']).stat().st_size != item['bytes'])
+    if missing and available < missing + 30 * 2**30:
+        raise RuntimeError('可用内存不足以容纳所选 H3 权重和推理工作区')
     if not os.path.ismount(weights):
-        available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
-                         if line.startswith('MemAvailable:'))
-        if available < index['total_bytes'] + 30 * 2**30:
-            raise RuntimeError('可用内存不足以容纳 H3 视频权重和推理工作区')
         weights.mkdir(exist_ok=True)
         if any(weights.iterdir()):
             raise RuntimeError('权重目录非空，拒绝覆盖')
-        run(['mount', '-t', 'tmpfs', '-o', 'size=80G', 'workbench-weights', str(weights)])
+        run(['mount', '-t', 'tmpfs', '-o', 'size=128G' if public else 'size=80G', 'workbench-weights', str(weights)])
+    elif public:
+        run(['mount', '-o', 'remount,size=128G', str(weights)])
     broker = ROOT / 'weight-download-grant.json'
     try:
-        broker.write_text(json.dumps({**cloud, 'bundle_id': key}))
-        broker.chmod(0o600)
-        restore(broker, ROOT, workers=64)
+        if public:
+            restore(None, ROOT, workers=64, public_index=index)
+        else:
+            broker.write_text(json.dumps({**cloud, 'bundle_id': key}))
+            broker.chmod(0o600)
+            restore(broker, ROOT, workers=64)
     finally:
         broker.unlink(missing_ok=True)
     return index['assets']
@@ -125,7 +137,7 @@ def main():
                 raise RuntimeError("此预设需要 Blackwell GPU：请申请 G4 / RTX PRO 6000")
             if int(torch.version.cuda.split('.')[0]) < 13:
                 raise RuntimeError("INT8 ConvRot 预设需要 CUDA 13 的 PyTorch")
-            if (ROOT / 'bundle-config.json').exists():
+            if (ROOT / 'bundle-config.json').exists() or selected_model() == 'minimax-image-bf16':
                 status('downloading', '权重下载到内存，同时安装 ComfyUI 环境')
                 prepare_in_parallel(restore_cloud_weights, install_environment)
             else:
@@ -140,7 +152,7 @@ def main():
 
 
 def download_models():
-    if (ROOT / 'bundle-config.json').exists():
+    if (ROOT / 'bundle-config.json').exists() or selected_model() == 'minimax-image-bf16':
         records = restore_cloud_weights()
         for item in records:
             target = COMFY / 'models' / item['file']

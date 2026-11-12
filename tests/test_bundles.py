@@ -145,3 +145,57 @@ def test_stream_restore_checks_hashes_reuses_verified_files_and_rejects_corrupti
 def test_restore_rejects_invalid_parallelism_before_reading_credentials(tmp_path, workers):
     with pytest.raises(ValueError, match='workers'):
         restore(tmp_path / 'missing.json', tmp_path / 'out', workers=workers)
+
+
+def test_public_pinned_weights_use_ranges_without_credentials_and_verify_sha256(tmp_path, monkeypatch):
+    import requests
+    payload = b'public model tensor bytes' * 1024
+    digest = hashlib.sha256(payload).hexdigest()
+    file = {'name': 'model', 'target': 'weights/model.safetensors', 'bytes': len(payload), 'sha256': digest,
+            'url': 'https://huggingface.co/synthetic/test/resolve/' + 'a' * 40 + '/model.safetensors'}
+    index = {'complete': True, 'deployment_revision': 2, 'files': [file], 'total_bytes': len(payload)}
+    reads, corrupt = [], [False]
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            assert not self.headers.get('Authorization')
+            start, end = map(int, self.headers['Range'][6:].split('-'))
+            data = payload[start:end + 1]
+            if corrupt[0]:
+                data = bytes([data[0] ^ 1]) + data[1:]
+            reads.append((start, end))
+            self.send_response(206)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def log_message(self, *_args):
+            pass
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    native_session = requests.Session
+    class LocalSource:
+        def __init__(self):
+            self.http = native_session()
+        def get(self, url, **kwargs):
+            assert url == file['url']
+            assert not kwargs['params'] and not kwargs['headers'].get('Authorization')
+            return self.http.get(f'http://127.0.0.1:{server.server_port}/model', **kwargs)
+    monkeypatch.setattr(requests, 'Session', LocalSource)
+    try:
+        root = tmp_path / 'public'
+        restore(None, root, workers=3, chunk_size=1024, public_index=index)
+        assert (root / file['target']).read_bytes() == payload
+        assert len(reads) > 1
+        reads.clear()
+        result = restore(None, root, workers=3, public_index=index)
+        assert not reads and result['cached_bytes'] == len(payload)
+        corrupt[0] = True
+        with pytest.raises(ValueError, match='SHA256'):
+            restore(None, tmp_path / 'corrupt', workers=3, chunk_size=1024, public_index=index)
+        assert not (tmp_path / 'corrupt' / file['target']).exists()
+        with pytest.raises(ValueError, match='pinned'):
+            restore(None, tmp_path / 'unversioned', public_index={**index, 'files': [{**file, 'url': file['url'].replace('a' * 40, 'main')}]})
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

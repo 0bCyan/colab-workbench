@@ -22,8 +22,12 @@ async def test_missing_video_catalog_fails_before_any_allocation(tmp_path):
         store.close()
 
 
-def test_video_install_overlaps_restore_and_serving_waits_for_both(tmp_path, monkeypatch):
-    (tmp_path / 'bundle-config.json').write_text('{}')
+@pytest.mark.parametrize('model', ['minimax-h3', 'minimax-image-bf16'])
+def test_video_install_overlaps_restore_and_serving_waits_for_both(tmp_path, monkeypatch, model):
+    import json
+    (tmp_path / 'media-config.json').write_text(json.dumps({'model': model}))
+    if model == 'minimax-h3':
+        (tmp_path / 'bundle-config.json').write_text('{}')
     barrier = threading.Barrier(2, timeout=3)
     completed = set()
 

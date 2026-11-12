@@ -15,6 +15,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import requests
 
@@ -36,7 +37,7 @@ def safe_path(root, name):
         raise ValueError('Unsafe relative path')
     return root / path
 
-def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www.googleapis.com/drive/v3/files/'):
+def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www.googleapis.com/drive/v3/files/', public_index=None):
     if type(workers) is not int or not 1 <= workers <= 256:
         raise ValueError('workers must be between 1 and 256')
     if type(chunk_size) is not int or chunk_size < 1:
@@ -46,8 +47,8 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
     started = time.perf_counter()
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    grant = json.loads(Path(broker).read_text())
-    base = grant['base'].rstrip('/')
+    grant = json.loads(Path(broker).read_text()) if public_index is None else {}
+    base = grant.get('base', '').rstrip('/')
     auth, auth_lock, local = {}, threading.Lock(), threading.local()
     metrics_lock = threading.Lock()
     status_path = root.parent / 'stream-restore-status.json'
@@ -66,7 +67,7 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
                     raise
                 time.sleep(min(.5 * (attempt + 1), 2))
 
-    index = remote_json(grant.get('bundle_id', 'index') + '.json')
+    index = remote_json(grant.get('bundle_id', 'index') + '.json') if public_index is None else public_index
     summary['total_bytes'] = index['total_bytes']
     if not index.get('complete') or index.get('deployment_revision', 0) < 2:
         raise ValueError('Complete deployment revision 2+ required')
@@ -74,6 +75,10 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
         safe_path(root, job['target'])
         if type(job['bytes']) is not int or job['bytes'] <= 0 or not re.fullmatch('[0-9a-f]{64}', job['sha256']):
             raise ValueError('Invalid weight size or digest')
+        if public_index is not None:
+            source = urlparse(job.get('url', ''))
+            if source.scheme != 'https' or source.netloc != 'huggingface.co' or not re.search(r'/resolve/[0-9a-f]{40}/', source.path):
+                raise ValueError('Public weights require pinned Hugging Face URLs')
     if len({job['name'] for job in index['files']}) != len(index['files']):
         raise ValueError('Duplicate artifact name')
 
@@ -88,6 +93,8 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
         temporary.replace(status_path)
 
     def headers():
+        if public_index is not None:
+            return {}
         with auth_lock:
             if auth.get('expires_at', 0) < time.time()+30:
                 auth.update(remote_json('token'))
@@ -103,7 +110,7 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
             try:
                 with metrics_lock:
                     summary['requests'] += 1
-                with local.http.get(api_base+job['file_id'], params={'alt':'media'},
+                with local.http.get(job['url'] if public_index is not None else api_base+job['file_id'], params={} if public_index is not None else {'alt':'media'},
                                     headers=dict(headers(), Range=f'bytes={start}-{start+length-1}'),
                                     stream=True, timeout=(15, 40)) as response:
                     if response.status_code != 206:
@@ -111,8 +118,8 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
                             key = str(response.status_code)
                             summary['http_errors'][key] = summary['http_errors'].get(key, 0) + 1
                         if response.status_code in (403, 429):
-                            raise PermissionError('Drive download quota HTTP ' + str(response.status_code))
-                        raise RuntimeError('Drive HTTP '+str(response.status_code))
+                            raise PermissionError('Weight download HTTP ' + str(response.status_code))
+                        raise RuntimeError('Weight download HTTP '+str(response.status_code))
                     data = bytearray()
                     for block in response.iter_content(1 << 20):
                         data.extend(block)

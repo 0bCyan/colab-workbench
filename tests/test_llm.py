@@ -456,3 +456,78 @@ async def test_old_unconfigured_account_slots_do_not_become_new_instances(tmp_pa
     assert llm.all() == []
     await llm.close()
     store.close()
+
+
+async def test_transient_status_timeout_recovers_on_original_endpoint_without_redeploy(rig, monkeypatch):
+    llm, fake, _, _ = rig
+    key = create(llm)
+    original_execute, original_models = fake.execute, llm.models
+    check_failed = False
+    deployment = {'phase': 'loading', 'message': '加载模型', 'stages': {'download': {'status': 'completed'}}}
+
+    async def execute(account, session, script):
+        nonlocal check_failed
+        if script.name.endswith('-llm-check.py') and not check_failed:
+            check_failed = True
+            raise TimeoutError()
+        result = await original_execute(account, session, script)
+        if script.name.endswith('-llm-bootstrap.py'):
+            llm.machine(key, deployment=deployment)
+        return result
+
+    async def models(service):
+        if not check_failed:
+            raise RuntimeError('服务模型未就绪')
+        return await original_models(service)
+
+    monkeypatch.setattr(fake, 'execute', execute)
+    monkeypatch.setattr(llm, 'models', models)
+    llm.request_start(key)
+    first_task = llm.tasks[key]
+    llm.request_start(key)
+    assert llm.tasks[key] is first_task
+    await eventually(lambda: llm.machine(key)['phase'] in {'ready', 'error'})
+    item = llm.machine(key)
+    assert item['phase'] == 'ready' and item['deployment'] == deployment
+    assert len([call for call in fake.calls if call[1] == 'create']) == 1
+    assert len([call for call in fake.calls if call[1] == 'exec']) == 1
+    assert len(fake.active['colab2']) == 1
+    logs = llm.store.get('llm_logs', key)
+    assert any('状态读取暂时中断' in row['message'] and 'TimeoutError' in row['message'] for row in logs)
+    # A subsequent reconnect preserves the already-running instance, without sending its bootstrap again.
+    await first_task
+    session = item['session']
+    llm.machine(key, phase='error', message='旧连接读取超时')
+    llm.request_start(key)
+    await eventually(lambda: llm.machine(key)['phase'] == 'ready')
+    assert llm.machine(key)['session'] == session and llm.machine(key)['deployment'] == deployment
+    assert len([call for call in fake.calls if call[1] == 'create']) == 1
+    assert len([call for call in fake.calls if call[1] == 'exec']) == 1
+
+
+async def test_repeated_empty_status_timeouts_report_useful_error_and_keep_instance(rig, monkeypatch):
+    llm, fake, _, _ = rig
+    key = create(llm)
+    original_execute = fake.execute
+    count = 0
+
+    async def execute(account, session, script):
+        nonlocal count
+        if script.name.endswith('-llm-check.py'):
+            count += 1
+            raise TimeoutError()
+        return await original_execute(account, session, script)
+
+    async def not_ready(_key):
+        raise TimeoutError()
+
+    monkeypatch.setattr(fake, 'execute', execute)
+    monkeypatch.setattr(llm, 'models', not_ready)
+    monkeypatch.setattr('backend.llm.STATUS_READ_FAILURES', 2)
+    llm.request_start(key)
+    await eventually(lambda: llm.machine(key)['phase'] == 'error')
+    item = llm.machine(key)
+    assert count == 2 and '连续 2 次' in item['message'] and 'TimeoutError' in item['message']
+    assert item['session'] and len(fake.active['colab2']) == 1
+    assert len([call for call in fake.calls if call[1] == 'create']) == 1
+    assert len([call for call in fake.calls if call[1] == 'exec']) == 1

@@ -24,6 +24,20 @@ from .telemetry import Telemetry
 
 BUSY = {"checking", "provisioning", "deploying", "stopping"}
 TABLE = "llm_instances"
+STATUS_READ_FAILURES = 5
+
+
+def transient_status_error(error):
+    if isinstance(error, (aiohttp.ClientError, TimeoutError, OSError)):
+        return True
+    text = str(error).lower()
+    return isinstance(error, RuntimeError) and any(word in text for word in (
+        'timeout', 'timed out', 'connection', 'ssl', 'eof', '502', '503', 'temporarily', 'network',
+    ))
+
+
+def error_message(error):
+    return clean(str(error).strip() or type(error).__name__)
 
 
 class LLM:
@@ -363,8 +377,9 @@ class LLM:
         if self.bundles:
             self.bundles.require([preset(item['config']['preset_id'])['bundle_id']])
         if key not in self.tasks or self.tasks[key].done():
-            self.machine(key, phase="checking", message="核对此实例的云端会话", deployment=None,
-                         loading_started_at=time.time())
+            self.machine(key, phase="checking", message="核对此实例的云端会话",
+                         deployment=item.get('deployment') if item.get('session') else None,
+                         loading_started_at=item.get('loading_started_at', time.time()) if item.get('session') else time.time())
             self.tasks[key] = asyncio.create_task(self.start(key))
         return self.public(key)
 
@@ -443,7 +458,7 @@ class LLM:
                     if self.bundles:
                         self.bundles.revoke(key)
                     return
-                except (aiohttp.ClientError, TimeoutError, RuntimeError):
+                except (aiohttp.ClientError, TimeoutError, RuntimeError, OSError):
                     pass
                 self.machine(key, legacy_model=None)
                 self.log(key, await self.colab.execute(account, session, self.bootstrap(key, cloud)))
@@ -455,7 +470,7 @@ class LLM:
                                  " if p.exists():\n"
                                  "  with p.open('rb') as f:\n"
                                  "   f.seek(max(0,p.stat().st_size-1800));print(f.read().decode(errors='replace'))\n")
-                deadline, checked = time.monotonic() + 3600, 0
+                deadline, checked, read_failures = time.monotonic() + 3600, 0, 0
                 while time.monotonic() < deadline:
                     if key in self.stopping:
                         return
@@ -466,10 +481,32 @@ class LLM:
                         if self.bundles:
                             self.bundles.revoke(key)
                         return
-                    except (aiohttp.ClientError, TimeoutError, RuntimeError):
+                    except (aiohttp.ClientError, TimeoutError, RuntimeError, OSError):
                         pass
                     if time.monotonic() - checked > 3:
-                        output = await self.colab.execute(account, session, check)
+                        try:
+                            output = await self.colab.execute(account, session, check)
+                        except Exception as exc:
+                            if not transient_status_error(exc):
+                                raise
+                            read_failures += 1
+                            detail = error_message(exc)
+                            self.log(key, f'状态读取暂时中断，继续检查原实例端点（{read_failures}/{STATUS_READ_FAILURES}）：{detail}')
+                            if read_failures >= STATUS_READ_FAILURES:
+                                # The control command can time out even after the model becomes healthy.
+                                try:
+                                    await self.models(key)
+                                    self.machine(key, phase='ready', message='服务已就绪', last_activity=time.time())
+                                    if self.bundles:
+                                        self.bundles.revoke(key)
+                                    return
+                                except (aiohttp.ClientError, TimeoutError, RuntimeError, OSError):
+                                    raise RuntimeError(f'连续 {read_failures} 次无法读取部署状态，原机器仍保留；可重新连接：{detail}') from exc
+                            self.machine(key, message='状态连接暂时中断，继续检查原实例端点')
+                            checked = time.monotonic()
+                            await asyncio.sleep(3)
+                            continue
+                        read_failures = 0
                         self.log(key, output)
                         for line in output.splitlines():
                             if line.startswith("LLM_STATUS:"):
@@ -481,8 +518,9 @@ class LLM:
                     await asyncio.sleep(3)
                 raise TimeoutError("服务部署超过 60 分钟，请查看日志或关闭机器")
             except Exception as exc:
-                self.machine(key, phase="error", message=clean(str(exc)), last_activity=time.time())
-                self.log(key, "启动失败：" + str(exc))
+                detail = error_message(exc)
+                self.machine(key, phase="error", message=detail, last_activity=time.time())
+                self.log(key, "启动失败：" + detail)
 
     def acquire(self, key):
         item = self.machine(key)

@@ -79,7 +79,7 @@ class Colab:
     async def execute(self, account, session, script):
         return await self.command(account, "exec", "-s", session, "-f", str(script), "--timeout", "90", timeout=120)
 
-    async def tunnel(self, account, session, identity):
+    async def tunnel(self, account, session, identity, service_port=8188):
         await self.close_tunnel(account)
         launcher = Path(self.launcher(account))
         first = launcher.read_text().splitlines()[0]
@@ -103,7 +103,7 @@ class Colab:
                 "-o", "ServerAliveInterval=20", "-o", "ServerAliveCountMax=3",
                 "-o", "ConnectTimeout=30", "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-                "-L", f"127.0.0.1:{port}:127.0.0.1:8188",
+                "-L", f"127.0.0.1:{port}:127.0.0.1:{int(service_port)}",
                 "-L", f"127.0.0.1:{telemetry_port}:127.0.0.1:8189", "root@colab-runtime",
                 stdout=log, stderr=log, start_new_session=True,
             )

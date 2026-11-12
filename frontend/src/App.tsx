@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, FolderOpen, LayoutGrid, LoaderCircle, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, FolderOpen, LayoutGrid, LoaderCircle, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Server, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
 import Workflow from './Workflow'
 import Library from './Library'
 import Performance from './Performance'
 import Dialog from './Dialog'
 import SettingsDialog from './SettingsDialog'
 import Resolution, { validDimension, resolutionError } from './Resolution'
+import Services from './Services'
 import { type State, type Draft, type Job, type Settings, type Graph, activeStatuses, phaseLabel, statusLabel } from './types'
 
 let csrf = ''
@@ -23,7 +24,7 @@ export default function App() {
   const [state, setState] = useState<State | null>(null)
   const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || '')
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [page, setPage] = useState<'studio' | 'library'>('studio')
+  const [page, setPage] = useState<'studio' | 'library' | 'services'>('studio')
   const [mobilePanel, setMobilePanel] = useState<'stage' | 'editor' | 'compute'>('stage')
   const [view, setView] = useState<'preview' | 'workflow'>('preview')
   const [error, setError] = useState('')
@@ -103,6 +104,8 @@ export default function App() {
 
   const profile = state?.accounts.find(p => p.id === account)
   const machine = profile?.machine
+  const llmService = state?.llm?.services.find(s => s.account === account)
+  const llmOccupied = !!llmService?.session || ['checking', 'provisioning', 'deploying', 'stopping'].includes(llmService?.phase ?? '')
   const computing = ['checking', 'provisioning', 'deploying', 'stopping'].includes(machine?.phase ?? '')
   const allJobs = state?.jobs ?? []
   const jobs = allJobs.filter(j => !j.deleted_at)
@@ -164,13 +167,14 @@ export default function App() {
   return <div className="app-shell">
     <aside className="rail">
       <div className="rail-nav"><button aria-label="创作工作台" title="创作工作台" className={page === 'studio' ? 'active' : ''} onClick={() => setPage('studio')}><SlidersHorizontal size={20} /><span>创作</span></button>
-        <button aria-label="成片与任务" title="成片与任务" className={page === 'library' ? 'active' : ''} onClick={() => setPage('library')}><LayoutGrid size={20} /><span>作品</span>{running.length > 0 && <i />}</button></div>
+        <button aria-label="成片与任务" title="成片与任务" className={page === 'library' ? 'active' : ''} onClick={() => setPage('library')}><LayoutGrid size={20} /><span>作品</span>{running.length > 0 && <i />}</button>
+        <button aria-label="模型服务" title="模型服务" className={page === 'services' ? 'active' : ''} onClick={() => setPage('services')}><Server size={20} /><span>服务</span>{state.llm?.services.some(s => s.session) && <i />}</button></div>
       <div className="rail-bottom"><button aria-label="使用说明" title="使用说明" onClick={() => setModal('help')}><CircleHelp size={20} /></button><button aria-label="工作台设置" title="设置" aria-haspopup="dialog" className={modal === 'settings' ? 'active' : ''} onClick={() => setModal('settings')}><Settings2 size={20} /></button></div>
     </aside>
     <div className="workspace">
       <header className="workspace-header">
-        <div className="workspace-heading"><h1>{page === 'studio' ? '创作工作台' : '作品管理'}</h1><span className="local-status"><span className={`tiny-dot ${connected ? '' : 'muted'}`} />{connected ? '本地服务在线' : '本地服务离线'}</span></div>
-        <div className="header-actions">
+        <div className="workspace-heading"><h1>{page === 'studio' ? '创作工作台' : page === 'services' ? '模型服务' : '作品管理'}</h1><span className="local-status"><span className={`tiny-dot ${connected ? '' : 'muted'}`} />{connected ? '本地服务在线' : '本地服务离线'}</span></div>
+        <div className="header-actions" hidden={page === 'services'}>
           <div className="header-workflow-actions" hidden={page !== 'studio'}><button className="secondary" aria-label="导入工作流" title="导入工作流" onClick={() => fileInput.current?.click()}><Upload size={14} /><span className="action-label">导入工作流</span></button><button className="secondary" aria-label="导出" title="导出工作流" onClick={exportGraph}><Download size={14} /><span className="action-label">导出</span></button></div>
           <button className="text-button" aria-label="草稿" title="草稿" onClick={() => setModal('drafts')}><FolderOpen size={15} /><span className="action-label">草稿</span></button>
           <button className="icon-button" aria-label="更多工作流操作" title="更多工作流操作" onClick={openJson}><MoreHorizontal size={20} /></button>
@@ -198,7 +202,7 @@ export default function App() {
             <div className="preview-caption"><span>{displayedJob?.name}<small>{displayedJob?.account} · 已保存到本地</small></span><a className="preview-download" aria-label="下载当前成片" href={(video || images[0]).url} download><ArrowDownToLine size={17} /></a></div></div> : <div className="preview-empty" role="status">{displayedJob && activeStatuses.has(displayedJob.status) ? <><LoaderCircle size={28} className="spin" /><strong>{statusLabel[displayedJob.status]}</strong><span>{displayedJob.message}</span></> : <><Film size={32} strokeWidth={1.2} /><strong>{displayedJob ? statusLabel[displayedJob.status] : '等待创作'}</strong><span>{displayedJob ? displayedJob.message : '生成后在这里预览'}</span></>}</div>}
           <div className="stage-status"><span><span className={`tiny-dot ${machine?.phase === 'ready' ? '' : 'muted'}`} />{running.length ? running[0].message : '准备好下一次创作'}</span><button className="text-button" onClick={() => setPage('library')}>全部任务 <ArrowUpRight size={13} /></button></div>
         </div>
-        <div className="render-bar panel"><div><div className="render-title"><Sparkles size={16} /><strong>{running.length ? `${running.length} 个任务进行中` : machine?.phase === 'ready' ? 'GPU 已就绪' : '按需启动 GPU'}</strong></div></div><button className="primary generate" onClick={generate} disabled={!!busy || !profile?.installed || !profile.credential_present || machine?.phase === 'stopping'}><Play size={16} fill="currentColor" />{busy === 'generate' ? '提交中…' : running.length ? '加入队列' : '生成视频'}<span>↗</span></button></div>
+        <div className="render-bar panel"><div><div className="render-title"><Sparkles size={16} /><strong>{llmOccupied ? '当前账号用于 LLM 服务' : running.length ? `${running.length} 个任务进行中` : machine?.phase === 'ready' ? 'GPU 已就绪' : '按需启动 GPU'}</strong></div></div><button className="primary generate" onClick={generate} disabled={!!busy || llmOccupied || !profile?.installed || !profile.credential_present || machine?.phase === 'stopping'}><Play size={16} fill="currentColor" />{busy === 'generate' ? '提交中…' : running.length ? '加入队列' : '生成视频'}<span>↗</span></button></div>
         <div className="under-stage"><label className="checkbox"><input type="checkbox" checked={stopAfter} onChange={e => setStopAfter(e.target.checked)} />取回成片后关闭 GPU</label></div>
         {running.length > 0 && <div className="current-jobs">{running.slice(0, 1).map(j => <div className="current-job" key={j.id}><div><span className="status-chip working"><LoaderCircle size={12} className="spin" />{statusLabel[j.status]}</span><strong>{j.name}</strong><span>{j.message}</span></div><div className="inline-actions">{j.status === 'recovering' && <button className="text-button" disabled={!!busy} onClick={() => action('resume', () => api(`/jobs/${j.id}/resume`, 'POST'))}>恢复查询</button>}<button className="text-button" onClick={() => action('cancel', () => api(`/jobs/${j.id}/cancel`, 'POST'))} disabled={!!busy}>取消</button></div>{j.progress != null && <div className="progress-track"><span style={{ width: `${j.progress}%` }} /></div>}</div>)}</div>}
         </section>
@@ -206,18 +210,19 @@ export default function App() {
         <aside className="compute-column"><section className="compute-panel panel"><header className="panel-heading"><span><Cloud size={16} /> 云端计算</span><button className="icon-button" aria-label="刷新账号状态" title="刷新余额与会话" disabled={!!busy || !profile?.installed || !profile.credential_present} onClick={() => action('refresh', () => api(`/accounts/${account}/refresh`, 'POST'))}><RefreshCw size={14} className={busy === 'refresh' ? 'spin' : ''} /></button></header><div className="compute-body">
           <label className="field account-field"><span>当前账号</span><select aria-label="当前账号" disabled={!state.accounts.length} value={account} onChange={e => { setAccount(e.target.value); localStorage.setItem('fieldwork-account', e.target.value) }}>{!state.accounts.length && <option value="">未发现账号</option>}{state.accounts.map(p => <option value={p.id} key={p.id}>{p.id} · {!p.installed ? '未安装入口' : p.credential_present ? '已配置' : '待登录'}</option>)}</select></label>
           {state.accounts.filter(p => p.id !== account && p.machine.session).map(p => <button className="other-account" key={p.id} onClick={() => { setAccount(p.id); localStorage.setItem('fieldwork-account', p.id) }}><span className="tiny-dot" />{p.id} 的机器仍在运行<ArrowUpRight size={12} /></button>)}
-          <div className="gpu-summary"><span><Cpu size={15} />RTX PRO 6000 <small>96 GB</small></span><span className={`status-chip ${machine?.phase === 'ready' ? 'success' : computing ? 'working' : ''}`}>{phaseLabel[machine?.phase ?? 'stopped']}</span></div>
+          <div className="gpu-summary"><span><Cpu size={15} />RTX PRO 6000 <small>96 GB</small></span><span className={`status-chip ${(llmOccupied ? llmService?.phase : machine?.phase) === 'ready' ? 'success' : computing ? 'working' : ''}`}>{llmOccupied ? `LLM · ${phaseLabel[llmService?.phase ?? 'stopped']}` : phaseLabel[machine?.phase ?? 'stopped']}</span></div>
           <div className="usage-grid"><div><span>账号余额</span><strong>{profile?.usage?.balance?.toLocaleString('en-US', { maximumFractionDigits: 2 }) ?? '—'}<small> CU</small></strong></div><div><span>账号消耗</span><strong>{profile?.usage?.rate?.toFixed(2) ?? '—'}<small> /h</small></strong></div></div>
-          {(profile?.error || machine?.phase !== 'ready') && <div className="machine-message" title={profile?.error || machine?.message}>{profile?.error || machine?.message}</div>}{(profile?.sessions ?? []).filter(s => s.name !== machine?.session).length > 0 && <div className="external-sessions">另有 {(profile?.sessions ?? []).filter(s => s.name !== machine?.session).length} 台外部会话</div>}
-          {machine?.phase === 'ready' ? <a className="secondary full" href={nativeUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开 ComfyUI</a> : <button className="secondary full" disabled={!!busy || computing || !profile?.installed || !profile.credential_present} onClick={() => action('start', () => api(`/accounts/${account}/start`, 'POST'))}>{computing ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{computing ? '正在准备…' : machine?.session ? '重新连接 / 重试部署' : '启动 GPU'}</button>}
+          {(profile?.error || machine?.phase !== 'ready') && <div className="machine-message" title={profile?.error || (llmOccupied ? llmService?.message : machine?.message)}>{profile?.error || (llmOccupied ? llmService?.message : machine?.message)}</div>}{(profile?.sessions ?? []).filter(s => s.name !== machine?.session && s.name !== llmService?.session).length > 0 && <div className="external-sessions">另有 {(profile?.sessions ?? []).filter(s => s.name !== machine?.session && s.name !== llmService?.session).length} 台外部会话</div>}
+          {llmOccupied ? <button className="secondary full" onClick={() => setPage('services')}><Server size={14} />管理此账号的 LLM 服务</button> : machine?.phase === 'ready' ? <a className="secondary full" href={nativeUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开 ComfyUI</a> : <button className="secondary full" disabled={!!busy || computing || !profile?.installed || !profile.credential_present} onClick={() => action('start', () => api(`/accounts/${account}/start`, 'POST'))}>{computing ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{computing ? '正在准备…' : machine?.session ? '重新连接 / 重试部署' : '启动 GPU'}</button>}
           {machine?.session && <button className="stop-button" disabled={!!busy || running.length > 0 || machine.phase === 'stopping'} title={running.length ? '请先取消未完成任务' : '释放这个工作台的云端机器'} onClick={() => action('stop', () => api(`/accounts/${account}/stop`, 'POST'))}><Power size={13} />{machine.phase === 'stopping' ? '正在关闭…' : '关闭并释放机器'}</button>}
           <div className="compute-footer"><button className="text-button" disabled={!profile} onClick={() => setModal('logs')}><Terminal size={12} />部署日志</button><button className="text-button" aria-haspopup="dialog" onClick={() => setModal('settings')}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
         </div></section>
-        {machine && <Performance account={account} machine={machine} />}
+        {machine && <Performance account={account} machine={llmOccupied && llmService ? llmService : machine} metricsPath={llmOccupied ? `/api/llm/${account}/metrics` : undefined} />}
         </aside>
       </div></>}
 
       {page === 'library' && <Library jobs={allJobs} accounts={state.accounts.map(a => a.id)} reuse={reuse} create={() => setPage('studio')} refresh={refresh} request={api} notify={setNotice} />}
+      {page === 'services' && <Services state={state} account={account} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} request={api} refresh={refresh} notify={setNotice} openSettings={() => setModal('settings')} openVideo={() => setPage('studio')} />}
     </div>
 
     {modal === 'settings' && <SettingsDialog saved={state.settings} accounts={state.accounts} account={account} busy={!!busy} close={() => setModal(null)} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} save={async value => {

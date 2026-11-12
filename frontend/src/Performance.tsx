@@ -17,7 +17,7 @@ function Meter({ label, percent, detail, history, color, icon }: { label: string
   return <div className="metric-card" aria-label={`${label}占用率`}><div className="metric-heading"><span>{icon}{label}</span><strong>{value(percent)}</strong></div><div className="metric-bar"><span style={{ width: `${percent == null ? 0 : Math.max(0, Math.min(100, percent))}%`, background: color }} /></div><div className="metric-bottom"><small title={detail}>{detail || '—'}</small><Sparkline samples={history} color={color} /></div></div>
 }
 
-export default function Performance({ account, machine }: { account: string; machine: Machine }) {
+export default function Performance({ account, machine, metricsPath }: { account: string; machine: Machine; metricsPath?: string }) {
   const [result, setResult] = useState<{ metrics: Metrics; received: number } | null>(null)
   const [clock, setClock] = useState(Date.now())
   useEffect(() => {
@@ -27,7 +27,7 @@ export default function Performance({ account, machine }: { account: string; mac
     setResult(null)
     const poll = async () => {
       try {
-        const response = await fetch(`/api/accounts/${account}/metrics`, { signal: controller.signal })
+        const response = await fetch(metricsPath ?? `/api/accounts/${account}/metrics`, { signal: controller.signal })
         if (!response.ok) throw new Error('Metrics unavailable')
         const metrics: Metrics = await response.json()
         if (active) setResult({ metrics, received: Date.now() })
@@ -36,7 +36,7 @@ export default function Performance({ account, machine }: { account: string; mac
     }
     poll()
     return () => { active = false; controller.abort(); clearTimeout(timer) }
-  }, [account, machine.session, machine.phase])
+  }, [account, machine.session, machine.phase, metricsPath])
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 2000); return () => clearInterval(timer) }, [])
   const metrics = result?.metrics
   const live = metrics?.account === account && metrics.session === machine.session && metrics.status === 'live' && clock - (result?.received ?? 0) < 8000 && machine.phase !== 'stopped'

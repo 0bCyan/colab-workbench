@@ -7,16 +7,21 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+import aiohttp
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from filelock import FileLock
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .colab import Colab, clean
 from .config import COMFY_COMMIT, DATA, MODEL_FILES, MODEL_REVISION, ROOT, profiles
 from .library import Library
+from .llm import BUSY, LLM
+from .llm_presets import PRESETS
 from .manager import Manager
 from .store import Store
 from .workflows import validate_graph
@@ -52,7 +57,15 @@ class ArtworkName(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
-def create_app(directory=DATA, driver=None, account_profiles=None):
+class LLMConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preset_id: str
+    context_tokens: Literal[32768, 131072, 262144] = 262144
+    gpu_memory: Literal[0.8, 0.9, 0.95] = 0.9
+    cpu_threads: Literal[8, 16, 24, 48] = 24
+
+
+def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=None):
     configured_profiles = account_profiles
     account_profiles = []
     token = secrets.token_urlsafe(32)
@@ -66,34 +79,66 @@ def create_app(directory=DATA, driver=None, account_profiles=None):
             store = Store(directory)
             # Keep live sessions visible even if their launcher was removed.
             account_profiles[:] = configured_profiles if configured_profiles is not None else profiles(
-                machine["account"] for machine in store.all("machines") if machine.get("session")
+                machine["account"] for machine in store.all("machines") + store.all("llm") if machine.get("session")
             )
             colab = driver or Colab(account_profiles, directory)
             manager = Manager(store, colab, account_profiles)
+            llm = LLM(store, llm_driver or driver or Colab(account_profiles, directory), account_profiles)
             app.state.store, app.state.manager = store, manager
+            app.state.llm = llm
             await manager.open()
+            await llm.open()
             try:
                 yield
             finally:
+                await llm.close()
                 await manager.close()
                 store.close()
 
     app = FastAPI(title="Colab Workbench", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
 
-    @app.middleware("http")
-    async def local_only(request, call_next):
-        origin = request.headers.get("origin")
-        if origin and urlparse(origin).netloc != request.headers.get("host"):
-            return JSONResponse({"detail": "只允许本地工作台的同源请求"}, status_code=403)
-        if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-workbench-token") != token:
-            return JSONResponse({"detail": "工作台会话已变化，请刷新页面"}, status_code=403)
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store"
-        return response
+    class LocalOnly:
+        # ASGI middleware keeps disconnects attached to the streaming request.
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                return await self.app(scope, receive, send)
+            request = Request(scope)
+            origin = request.headers.get("origin")
+            error = None
+            is_llm = request.url.path.startswith("/llm/")
+            if origin and urlparse(origin).netloc != request.headers.get("host"):
+                error = JSONResponse({"detail": "只允许本地工作台的同源请求"}, status_code=403)
+            elif is_llm:
+                scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
+                if scheme.lower() != "bearer" or not secrets.compare_digest(supplied.encode(), app.state.llm.key().encode()):
+                    error = JSONResponse({"error": {"message": "服务密钥无效", "type": "authentication_error"}}, status_code=401)
+            elif request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-workbench-token") != token:
+                error = JSONResponse({"detail": "工作台会话已变化，请刷新页面"}, status_code=403)
+
+            async def guarded_send(message):
+                if message["type"] == "http.response.start":
+                    headers = MutableHeaders(scope=message)
+                    headers["X-Content-Type-Options"] = "nosniff"
+                    headers["Referrer-Policy"] = "no-referrer"
+                    if request.url.path.startswith("/api/") or is_llm:
+                        headers["Cache-Control"] = "no-store"
+                await send(message)
+
+            try:
+                if error is not None:
+                    await error(scope, receive, guarded_send)
+                else:
+                    await self.app(scope, receive, guarded_send)
+            finally:
+                finish = scope.get("state", {}).get("llm_finish")
+                if finish:
+                    finish()
+
+    app.add_middleware(LocalOnly)
 
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
@@ -114,6 +159,7 @@ def create_app(directory=DATA, driver=None, account_profiles=None):
         jobs = sorted(store().all("jobs"), key=lambda j: j["created_at"], reverse=True)
         jobs = [{k: v for k, v in j.items() if k not in {"graph", "history"}} for j in jobs]
         return {"token": token, "accounts": accounts, "jobs": jobs,
+                "llm": {"presets": PRESETS, "services": [app.state.llm.public(p["id"]) for p in account_profiles]},
                 "settings": store().get("settings", "main"),
                 "drafts": [{k: v for k, v in d.items() if k not in {"graph", "positions"}} for d in store().all("drafts")],
                 "preset": {"comfy_commit": COMFY_COMMIT, "model_revision": MODEL_REVISION, "models": MODEL_FILES}}
@@ -153,6 +199,97 @@ def create_app(directory=DATA, driver=None, account_profiles=None):
     @app.get("/api/accounts/{account}/metrics")
     async def metrics(account):
         return await manager().telemetry.read(account)
+
+    @app.put("/api/llm/{account}/config")
+    async def llm_config(account, body: LLMConfig):
+        return app.state.llm.configure(account, body.model_dump())
+
+    @app.post("/api/llm/{account}/start", status_code=202)
+    async def llm_start(account):
+        return app.state.llm.request_start(account)
+
+    @app.post("/api/llm/{account}/stop", status_code=202)
+    async def llm_stop(account):
+        return app.state.llm.request_stop(account)
+
+    @app.get("/api/llm/{account}/logs")
+    async def llm_logs(account):
+        app.state.llm.machine(account)
+        return store().get("llm_logs", account, [])
+
+    @app.get("/api/llm/{account}/metrics")
+    async def llm_metrics(account):
+        return await app.state.llm.telemetry.read(account)
+
+    @app.post("/api/llm/key")
+    async def llm_key():
+        return {"key": app.state.llm.key()}
+
+    @app.api_route("/llm/{account}/v1/{route:path}", methods=["GET", "POST"])
+    async def llm_proxy(account: str, route: str, request: Request):
+        llm = app.state.llm
+        if (request.method, route) not in {("GET", "models"), ("POST", "chat/completions"), ("POST", "completions")}:
+            raise HTTPException(404, "不支持的服务接口")
+        try:
+            item = llm.machine(account)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        if item["phase"] != "ready" or not item.get("port"):
+            return JSONResponse({"error": {"message": "服务未就绪，请在工作台启动或重新连接", "type": "service_unavailable"}}, status_code=503)
+        payload = None
+        if request.method == "POST":
+            chunks, size = [], 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > 8 * 1024**2:
+                    raise HTTPException(413, "请求不能超过 8 MiB")
+                chunks.append(chunk)
+            try:
+                payload = json.loads(b"".join(chunks))
+            except (ValueError, UnicodeError) as exc:
+                raise HTTPException(400, "请求必须是 JSON") from exc
+            if not isinstance(payload, dict) or payload.get("model") != "workbench-llm":
+                raise HTTPException(400, "model 应为 workbench-llm")
+        acquired = False
+        upstream = None
+
+        def finish():
+            nonlocal acquired
+            if upstream is not None:
+                upstream.close()
+            if acquired:
+                acquired = False
+                llm.release(account)
+
+        request.state.llm_finish = finish
+        try:
+            if request.method == "POST":
+                item = llm.acquire(account)
+                acquired = True
+            upstream = await llm.http.request(request.method, f"http://127.0.0.1:{item['port']}/v1/{route}",
+                                              json=payload, timeout=aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=600),
+                                              allow_redirects=False)
+        except ValueError as exc:
+            finish()
+            raise HTTPException(409, str(exc)) from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            finish()
+            raise HTTPException(502, "服务连接失败，请重新连接") from exc
+        except BaseException:
+            finish()
+            raise
+
+        async def stream():
+            try:
+                async for chunk in upstream.content.iter_any():
+                    yield chunk
+            finally:
+                finish()
+
+        return StreamingResponse(stream(), status_code=upstream.status,
+                                 headers={"Content-Type": upstream.headers.get("Content-Type", "application/json"),
+                                          "Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+                                 background=BackgroundTask(finish))
 
     @app.post("/api/jobs", status_code=202)
     async def submit(body: Submission):
@@ -211,7 +348,7 @@ def create_app(directory=DATA, driver=None, account_profiles=None):
 
     @app.put("/api/settings")
     async def settings(body: Settings):
-        if any(m["phase"] in {"checking", "provisioning", "deploying"} for m in store().all("machines")):
+        if any(m["phase"] in BUSY - {"stopping"} for m in store().all("machines") + store().all("llm")):
             raise ValueError("请等待部署结束后再修改设置")
         return store().put("settings", "main", body.model_dump())
 

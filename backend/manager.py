@@ -75,11 +75,21 @@ class Manager:
             return self.store.get("accounts", account)
 
     def request_start(self, account):
+        self.check_service_slot(account)
         if account in self.stopping:
             raise ValueError("机器正在停止，请稍候")
         if account not in self.start_tasks or self.start_tasks[account].done():
+            # Reserve synchronously so a simultaneous LLM start cannot claim this account.
+            if self.machine(account)["phase"] != "ready":
+                self.machine(account, phase="checking", message="核对账号与云端会话")
             self.start_tasks[account] = asyncio.create_task(self.start(account))
         return self.machine(account)
+
+    def check_service_slot(self, account):
+        self.machine(account)
+        service = self.store.get("llm", account, {})
+        if service.get("session") or service.get("phase") in {"checking", "provisioning", "deploying", "stopping"}:
+            raise ValueError("此账号已有 LLM 服务，请先关闭服务或选择其他账号")
 
     async def start(self, account):
         async with self.locks[account]:
@@ -194,12 +204,13 @@ class Manager:
         job = self.job(key)
         if not job or job["status"] != "recovering":
             raise ValueError("只有等待恢复的任务可以继续查询")
+        self.check_service_slot(job["account"])
         self.ensure_worker(job["account"])
         return job
 
     def submit(self, account, graph, name, stop_after):
         validate_graph(graph)
-        self.machine(account)
+        self.check_service_slot(account)
         if account in self.stopping:
             raise ValueError("账号的机器正在停止")
         if len(self.active_jobs(account)) >= 20:

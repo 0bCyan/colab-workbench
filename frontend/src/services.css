@@ -1,0 +1,91 @@
+.header-actions[hidden] { display: none }
+.services-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(260px, 1fr) 270px; gap: 14px }
+.service-config, .service-center, .service-test { display: flex; flex-direction: column; min-height: 0; overflow: hidden }
+.service-config-body { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; padding: 14px }
+.service-kind { display: flex; padding: 3px; background: #edf2e6; border: 1px solid #e2e9d9; border-radius: 7px; gap: 4px; margin-bottom: 18px }
+.service-kind > * { display: flex; flex: 1; align-items: center; justify-content: center; gap: 5px; min-height: 32px; font-size: 11px; color: #77866b; white-space: nowrap }
+.service-kind > span { background: #fff; color: #4e6740; border-radius: 5px; box-shadow: 0 1px 4px #21391a08 }
+.service-kind button:hover { color: #4d6841 }
+.service-presets { display: flex; flex-direction: column; gap: 8px; margin: 15px 0 20px }
+.service-presets > button { text-align: left; border: 1px solid #e0e6d9; border-radius: 8px; padding: 13px 11px; background: #fdfefb; min-width: 0 }
+.service-presets > button > span { display: flex; justify-content: space-between; align-items: center; gap: 6px }
+.service-presets strong { font-size: 12px; font-weight: 550; color: #4c6140 }
+.service-presets > button > span > svg { visibility: hidden; color: #68884d; flex: none }
+.service-presets small { display: flex; gap: 7px; align-items: center; font-size: 10px; color: #798a6d; margin-top: 8px }
+.service-presets i { font-style: normal; padding: 2px 5px; background: #edf2e5; border-radius: 3px; font-size: 9px; margin-left: auto }
+.service-presets > button[aria-pressed=true] { background: #f0f5e6; border-color: #b0c497; box-shadow: 0 0 0 1px #b0c49720 }
+.service-presets > button[aria-pressed=true] > span > svg { visibility: visible }
+.service-presets > button:hover:not(:disabled) { border-color: #a5bb8d }
+.service-presets > button:disabled { cursor: default; opacity: .72 }
+.service-presets > button[aria-pressed=true]:disabled { opacity: 1 }
+.service-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px }
+.service-hint { font-size: 10px; line-height: 1.7; color: #7c8c70; margin: 0 }
+.service-config-footer { display: flex; justify-content: space-between; align-items: center; gap: 7px; border-top: 1px solid var(--line); padding: 11px 13px; min-height: 42px; flex: none; font-size: 10px; color: #7b8a6e }
+.service-config-footer button { font-size: 11px }
+.service-center { gap: 14px }
+.endpoint-panel { flex: none }
+.endpoint-body { padding: 18px 20px 14px }
+.service-title { display: flex; flex-direction: column; gap: 6px; margin-bottom: 17px }
+.service-title h2 { font-size: 19px; font-weight: 550; color: #405637; letter-spacing: -.4px }
+.service-title > span { font-size: 11px; color: #829275 }
+.endpoint-value { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid #dce5d1; background: #f4f7ec; border-radius: 7px; min-width: 0 }
+.endpoint-value code { flex: 1; min-width: 0; font-family: ui-monospace, monospace; color: #587046; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all }
+.endpoint-value button { flex: none }
+.endpoint-details { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 12px 0 }
+.endpoint-details > span { font-size: 10px; color: #859179; white-space: nowrap }
+.endpoint-details code { font-size: 11px; color: #647c52; margin-left: 5px; user-select: all }
+.endpoint-details button { font-size: 11px }
+.service-test { flex: 1 }
+.service-test .stage-heading { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line) }
+.service-output { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; padding: 18px 20px; color: #506548 }
+.service-output pre { font-family: inherit; font-size: 12px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere }
+.service-test-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #a1b290; text-align: center; padding: 12px }
+.service-test-empty strong { font-weight: 500; font-size: 13px; color: #6c805b }
+.service-test-empty > span { font-size: 11px; color: #8c9a7f }
+.service-reasoning { font-size: 11px; color: #7c8d6f; margin-bottom: 12px; border-bottom: 1px solid #e8eddf; padding-bottom: 10px }
+.service-reasoning summary { cursor: pointer; margin-bottom: 6px }
+.service-cursor { display: inline-block; height: 12px; width: 4px; background: #99ae7e; margin-left: 2px }
+.service-prompt { flex: none; padding: 12px 16px 14px; border-top: 1px solid var(--line); background: #fbfcf8 }
+.service-prompt textarea { min-height: 56px; max-height: 120px; font-size: 12px; resize: none; line-height: 1.65; background: #fff; padding: 10px 12px }
+.service-prompt > div { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 9px }
+.service-prompt small { font-size: 10px; color: #869579 }
+.service-prompt button { min-height: 32px; padding: 7px 11px; font-size: 11px; flex: none }
+.service-example { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; background: #f8faf3 }
+.service-example > div { display: flex; justify-content: space-between; align-items: center; color: #87977a; font-size: 10px; margin-bottom: 12px }
+.service-example pre { font-size: 11px; line-height: 1.9; color: #5e7350; font-family: ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere }
+.service-error { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; background: #fbf0e8; color: #946348; font-size: 11px; line-height: 1.5; flex: none; max-height: 80px; overflow: auto }
+.service-machine-message { font-size: 11px; color: #798c6c; margin: 8px 0 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.service-external { font-size: 10px; color: #92764e; margin-bottom: 8px }
+.service-compute .primary.full { min-height: 35px; font-size: 12px }
+.service-tabs { display: none }
+@media (min-width: 1600px) { .services-grid { grid-template-columns: 300px minmax(300px, 1fr) 300px; gap: 18px } .service-config-body { padding: 18px } }
+@media (min-width: 1001px) and (max-width: 1150px) { .services-grid { grid-template-columns: 230px minmax(240px, 1fr) 250px; gap: 10px } .endpoint-body { padding: 16px 13px } .endpoint-value code { font-size: 10px } }
+@media (max-width: 1000px) {
+  .service-tabs { display: flex }
+  .services-grid { display: flex; gap: 0 }
+  .services-grid > .service-config, .services-grid > .service-center, .services-grid > .service-compute { display: none; flex: 1; width: 100%; min-height: 0 }
+  .service-mobile-config > .service-config, .service-mobile-endpoint > .service-center, .service-mobile-compute > .service-compute { display: flex }
+}
+@media (max-width: 520px) {
+  .service-title h2 { font-size: 17px }
+  .endpoint-body { padding: 13px 12px 11px }
+  .endpoint-value { padding: 8px }
+  .endpoint-value code { font-size: 10px }
+  .endpoint-details code { font-size: 10px; margin-left: 2px }
+  .endpoint-details button { font-size: 10px; gap: 4px }
+  .service-output { padding: 14px 12px }
+  .service-prompt { padding: 10px 12px }
+  .service-prompt small { max-width: 115px }
+  .service-example { padding: 14px 12px }
+  .service-center { gap: 10px }
+}
+@media (max-height: 650px) {
+  .endpoint-body { padding-top: 11px; padding-bottom: 9px }
+  .service-title { gap: 3px; margin-bottom: 10px }
+  .service-title h2 { font-size: 16px }
+  .endpoint-details { margin: 8px 0 }
+  .service-center { gap: 9px }
+  .service-presets { margin: 10px 0 12px; gap: 6px }
+  .service-presets > button { padding: 10px }
+  .service-kind { margin-bottom: 12px }
+}

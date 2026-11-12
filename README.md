@@ -1,6 +1,6 @@
 # Fieldwork · 本地 ComfyUI / Colab 工作台
 
-一个可在本机使用的视频工作台。提示词、工作流编辑、排队、记录和成片保存在本机；Colab G4 提供 GPU、模型部署与 ComfyUI 执行。
+一个可在本机使用的视频与语言模型工作台。提示词、工作流编辑、排队、记录和成片保存在本机；Colab G4 提供 GPU、模型部署、ComfyUI 执行和 LLM 推理。LLM 在本机提供按账号固定的 OpenAI 兼容端点。
 
 默认使用已验证的 **MiniMax H3 INT8 ConvRot、普通 20 步、无 Turbo LoRA** 配置。项目调用用户自行配置的 `colab1` / `colab2` / … / `colabN` 启动器，支持一个或多个账号，账号登录凭证始终留在各自机器上。仓库中的这些名字是启动器槽位，不是 Google 账户信息。
 
@@ -68,6 +68,39 @@ macOS 双击项目中的 **`启动工作台.command`**，或在项目目录运�
 
 账号切换仅改变新任务的目标：已经提交的任务继续绑定原账号。各账号各有机器、队列与日志；切走后仍在运行的工作台机器会在面板提示。账号的其他会话只显示存在情况，不提供停止入口。账户额度显示的是整个账号的消耗。
 
+## 语言模型服务
+
+侧栏「服务」提供独立的 LLM 工作区，沿用同一套账号与性能看板。选择引擎与模型预设，设置总上下文（32K / 128K / 256K，包含输入和输出），然后「保存配置」或直接「启动服务」。启动会先保存当前配置；服务运行期间锁定部署配置，更换模型前先关闭机器。页面提供端点与密钥复制、流式连接测试、curl 示例和部署日志。
+
+| 初始预设 | 引擎 | 权重量化 | 状态 |
+| --- | --- | --- | --- |
+| [Qwen3.8 27B](https://huggingface.co/Qwen/Qwen3.8-27B-FP8) | vLLM | FP8 | 待实机验收 |
+| [Qwen3.8 27B RANA](https://huggingface.co/abliterant/Qwen3.8-27B-RANA-abliterated-FP8) | vLLM | FP8，减少拒答的社区版本 | 待实机验收 |
+| [Qwen3.8 27B Huihui](https://huggingface.co/munekazu/Huihui-Qwen3.8-27B-abliterated-FP8) | vLLM | FP8，减少拒答的社区版本 | 待实机验收 |
+| [Qwen3.8 Flash-Next GSQ-RCO](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) | llama.cpp | IQ3_S GGUF | 待实机验收 |
+
+预设固定模型 revision 和引擎版本，清单见 `backend/llm_presets.py`。它们是用于后续验收的部署配方，不代表已在 G4 上通过加载、长上下文、质量或速度测试；界面不展示未经实测的速度。当前不接受任意仓库、远端代码或 shell 参数。vLLM 可设置显存预算，llama.cpp 可设置 CPU 线程数；当前都是单路生成。
+
+**连接方式：** 本机调用方 → 本机 FastAPI 端点 → 该账号专属 SSH 隧道 → Colab 的 `127.0.0.1:8000` → vLLM / llama-server。远端环境在独立的 `/content/colab-workbench-llm` 中，首次启动才安装依赖并下载模型，不改 ComfyUI 的环境。模型仍保存在 Colab 临时磁盘，不上传到本机仓库。
+
+每个账号的端点固定为 `http://127.0.0.1:8765/llm/colabN/v1`，模型名统一为 `workbench-llm`。例如在工作台启动 `colab2` 的服务后，将复制的密钥设为环境变量，即可调用：
+
+```bash
+curl http://127.0.0.1:8765/llm/colab2/v1/chat/completions \
+  -H "Authorization: Bearer $WORKBENCH_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"workbench-llm","messages":[{"role":"user","content":"你好"}],"stream":true}'
+```
+
+OpenAI 兼容客户端填写该账号的完整 `/v1` 地址、工作台服务密钥和模型名即可。支持 `GET /models`、`POST /chat/completions`、`POST /completions` 及流式响应；暂不提供 embeddings、文件上传或云端管理接口。服务密钥是本地生成的应用密钥，与 Google 登录凭证无关。它保存在 `.data/`，只在用户点击复制或发送连接测试时取出，不进入常规状态响应、浏览器本地存储或日志。修改 Google 账号或切换页面账号不改变该密钥。
+
+- 切换账号仅切换管理视图与下一次启动目标。已有客户端继续调用原账号端点，关闭后返回 503，不会自动切到另一账号或自动开机。
+- 同一账号的视频机器与 LLM 服务互斥，防止重复申请或混用环境。不同空闲账号可分别运行服务。LLM 启动会实时查询云端会话；存在外部测试等其他会话时拒绝申请新机器，不接管或停止外部会话。
+- 每次分配先记录专属 `wbllm-<安装ID>-<账号编号>-<随机ID>` 会话名，连接与停止时验证归属。重复启动复用当前操作；分配途中关闭会等待结果，再释放这台机器。失败仍保留关机入口。
+- 单账号最多一个生成请求；额外请求返回 409。生成期间禁止关闭，空闲计时从请求结束开始。测试区的「停止生成」断开该请求，不释放机器。
+- 关闭服务会释放对应 Colab 机器；重新打开本地工作台只显示等待重连，不自动重建或申请 GPU。「退出时释放机器」和空闲关机设置同时适用于视频与 LLM 服务。
+- 所有端点仍只监听本机。调用需 `Authorization: Bearer ...`；其他站点的浏览器请求被同源检查拒绝。需要保留本地后台运行才能调用。
+
 ## 作品管理与性能看板
 
 - 「作品」支持按名称搜索、按账号/状态筛选、自适应分页、单个或批量选择、重命名、预览、下载和复用参数。复用参数前会自动为当前草稿保存副本。
@@ -125,6 +158,9 @@ macOS 双击项目中的 **`启动工作台.command`**，或在项目目录运�
 backend/
   app.py            本地 HTTP API、同源防护、静态页面
   manager.py        账号隔离、部署、任务队列、恢复、关闭机器
+  llm.py            独立 LLM 会话、配置、健康检查、单路请求与释放
+  llm_presets.py    固定版本的模型与引擎预设
+  deploy_llm_remote.py  独立 vLLM / llama.cpp 安装、下载与服务启动
   colab.py          调用现有 Colab CLI，建立受控 SSH 隧道
   bridge.py         保留多账号上下文、禁用 SSH 隐式开机
   deploy_remote.py  固定版本远端安装与下载

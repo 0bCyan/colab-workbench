@@ -123,6 +123,8 @@ print(response.choices[0].message.content)
 
 ## 容器与服务器
 
+macOS 本地 Electron 应用包含独立 Python 后端和界面，直接调用本机 Colab CLI，不加载线上站点；打包与数据目录见 [本地桌面版](docs/desktop-app.md)。线上工作台与桌面版分别维护。
+
 Docker Compose 的安装、同版 CLI 多账号迁移、SSH 转发和可选 Caddy HTTPS 入口见 [容器部署文档](docs/container-deployment.md)。默认仅绑定服务器回环地址，启用域名时强制账号登录、没有注册入口；第三方 OAuth 尚未接入。
 
 ## 云盘权重与并行初始化

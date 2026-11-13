@@ -1,0 +1,17 @@
+{
+  "name": "fieldwork-desktop",
+  "productName": "Fieldwork",
+  "version": "0.1.0",
+  "description": "Local Colab creative workbench",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "prepare:backend": "node prepare.cjs",
+    "package:mac": "npm run prepare:backend && node package.cjs"
+  },
+  "devDependencies": {
+    "electron": "45.3.1",
+    "@electron/packager": "20.3.0"
+  }
+}

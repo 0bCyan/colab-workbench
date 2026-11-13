@@ -5,7 +5,7 @@ import sys
 from pathlib import PurePosixPath
 
 PRIVATE_DIRS = {
-    '.data', 'work-backup', 'backups', 'screenshots', 'outputs', '.ssh', '.local',
+    '.data', 'runtime', 'work-backup', 'backups', 'screenshots', 'outputs', '.ssh', '.local',
     '.config', 'credentials', 'secrets', 'sessions', 'colab-accounts',
     'node_modules', '.venv', 'dist', 'test-results', 'playwright-report', 'blob-report',
 }

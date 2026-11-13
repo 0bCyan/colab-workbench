@@ -15,6 +15,7 @@ coverage/
 
 # Local workbench data: credentials, machine ownership, sessions, logs, artwork
 .data/
+runtime/
 work-backup/
 backups/
 outputs/

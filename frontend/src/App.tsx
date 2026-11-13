@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, Image as ImageIcon, FolderOpen, LayoutGrid, LoaderCircle, LogOut, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Server, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
 import Workflow from './Workflow'
 import Library from './Library'
@@ -9,6 +9,9 @@ import Resolution, { validResolution, resolutionError, imageResolutionError } fr
 import Services from './Services'
 import ServiceProgress from './ServiceProgress'
 import { type State, type Draft, type Job, type Settings, type Graph, type Machine, activeStatuses, phaseLabel, statusLabel } from './types'
+
+const CanvasDemo = lazy(() => import('./canvas/CanvasDemo'))
+const initialPage = new URLSearchParams(location.search).get('view') === 'canvas' ? 'canvas' : 'studio'
 
 let csrf = ''
 async function api<T = unknown>(path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -28,7 +31,8 @@ export default function App({ accountName, signOut }: { accountName?: string; si
   const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || '')
   const [draft, setDraft] = useState<Draft | null>(null)
   const modeDrafts = useRef<Partial<Record<'image' | 'video', Draft>>>({})
-  const [page, setPage] = useState<'studio' | 'library' | 'services'>('studio')
+  const [page, setPage] = useState<'studio' | 'canvas' | 'library' | 'services'>(initialPage)
+  const [canvasOpened, setCanvasOpened] = useState(initialPage === 'canvas')
   const [mobilePanel, setMobilePanel] = useState<'stage' | 'editor' | 'compute'>('stage')
   const [view, setView] = useState<'preview' | 'workflow'>('preview')
   const [error, setError] = useState('')
@@ -226,14 +230,15 @@ export default function App({ accountName, signOut }: { accountName?: string; si
   return <div className="app-shell">
     <aside className="rail">
       <div className="rail-nav"><button aria-label="创作工作台" title="创作工作台" className={page === 'studio' ? 'active' : ''} onClick={() => setPage('studio')}><SlidersHorizontal size={20} /><span>创作</span></button>
+        <button aria-label="画布" title="画布" className={page === 'canvas' ? 'active' : ''} onClick={() => { setCanvasOpened(true); setPage('canvas') }}><Network size={20} /><span>画布</span></button>
         <button aria-label="成片与任务" title="成片与任务" className={page === 'library' ? 'active' : ''} onClick={() => setPage('library')}><LayoutGrid size={20} /><span>作品</span>{running.length > 0 && <i />}</button>
         <button aria-label="模型服务" title="模型服务" className={page === 'services' ? 'active' : ''} onClick={() => setPage('services')}><Server size={20} /><span>服务</span>{state.llm?.services.some(s => s.session) && <i />}</button></div>
       <div className="rail-bottom">{signOut && <button aria-label="退出登录" title={`${accountName ?? ''} · 退出登录`} onClick={() => signOut().catch(e => setError(e.message))}><LogOut size={20} /></button>}<button aria-label="使用说明" title="使用说明" onClick={() => setModal('help')}><CircleHelp size={20} /></button><button aria-label="工作台设置" title="设置" aria-haspopup="dialog" className={modal === 'settings' ? 'active' : ''} onClick={() => setModal('settings')}><Settings2 size={20} /></button></div>
     </aside>
     <div className="workspace">
       <header className="workspace-header">
-        <div className="workspace-heading"><h1>{page === 'studio' ? '创作工作台' : page === 'services' ? '模型服务' : '作品管理'}</h1><span className="local-status"><span className={`tiny-dot ${connected ? '' : 'muted'}`} />{connected ? '本地服务在线' : '本地服务离线'}</span></div>
-        <div className="header-actions" hidden={page === 'services'}>
+        <div className="workspace-heading"><h1>{page === 'studio' ? '创作工作台' : page === 'canvas' ? '画布' : page === 'services' ? '模型服务' : '作品管理'}</h1><span className="local-status"><span className={`tiny-dot ${connected ? '' : 'muted'}`} />{connected ? '本地服务在线' : '本地服务离线'}</span></div>
+        <div className="header-actions" hidden={page === 'services' || page === 'canvas'}>
           <div className="header-workflow-actions" hidden={page !== 'studio'}><button className="secondary" aria-label="导入工作流" title="导入工作流" onClick={() => fileInput.current?.click()}><Upload size={14} /><span className="action-label">导入工作流</span></button><button className="secondary" aria-label="导出" title="导出工作流" onClick={exportGraph}><Download size={14} /><span className="action-label">导出</span></button></div>
           <button className="text-button" aria-label="草稿" title="草稿" onClick={() => setModal('drafts')}><FolderOpen size={15} /><span className="action-label">草稿</span></button>
           <button className="icon-button" aria-label="更多工作流操作" title="更多工作流操作" onClick={openJson}><MoreHorizontal size={20} /></button>
@@ -280,6 +285,7 @@ export default function App({ accountName, signOut }: { accountName?: string; si
         </aside>
       </div></>}
 
+      {canvasOpened && <div className="canvas-page" hidden={page !== 'canvas'}><Suspense fallback={<div className="panel" style={{ padding: 24, flex: 1 }}>正在打开画布…</div>}><CanvasDemo accounts={state.accounts.map(a => a.id)} notify={setNotice} /></Suspense></div>}
       {page === 'library' && <Library jobs={allJobs} accounts={state.accounts.map(a => a.id)} reuse={reuse} create={() => setPage('studio')} refresh={refresh} request={api} notify={setNotice} />}
       {page === 'services' && <Services updateMachine={(id, next) => updateMachine(id, 'llm', next)} state={state} account={account} request={api} refresh={refresh} notify={setNotice} openSettings={() => setModal('settings')} />}
     </div>

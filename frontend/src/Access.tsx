@@ -18,7 +18,8 @@ export default function Access() {
     if (!response.ok) throw new Error('无法连接工作台，请稍后重试')
     const next: Session = await response.json()
     setSession(next); setConnectionError('')
-    history.replaceState(null, '', next.required && !next.authenticated ? '/login' : '/')
+    const view = new URLSearchParams(location.search).get('view') === 'canvas' ? '/?view=canvas' : '/'
+    history.replaceState(null, '', next.required && !next.authenticated ? '/login' : view)
     return next
   }, [])
   useEffect(() => {

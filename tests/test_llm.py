@@ -531,3 +531,22 @@ async def test_repeated_empty_status_timeouts_report_useful_error_and_keep_insta
     assert item['session'] and len(fake.active['colab2']) == 1
     assert len([call for call in fake.calls if call[1] == 'create']) == 1
     assert len([call for call in fake.calls if call[1] == 'exec']) == 1
+
+
+async def test_private_converted_llm_still_requires_drive_before_allocation(tmp_path):
+    from backend.bundles import Bundles
+    from backend.llm import LLM
+    from backend.llm_presets import preset
+
+    store, fake = Store(tmp_path), FakeLLM()
+    store.put('settings', 'main', {'identity': '', 'idle_minutes': 0, 'stop_on_exit': False})
+    llm = LLM(store, fake, PROFILES, bundles=Bundles(tmp_path))
+    try:
+        key = create(llm)
+        assert preset(llm.machine(key)['config']['preset_id'])['weight_source'] == 'drive'
+        with pytest.raises(ValueError, match='云盘部署包尚未配置'):
+            llm.request_start(key)
+        assert not fake.calls and not llm.tasks
+    finally:
+        await llm.close()
+        store.close()

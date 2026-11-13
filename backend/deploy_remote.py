@@ -17,19 +17,6 @@ else:
 ROOT = Path("/content/colab-workbench")
 COMFY = ROOT / "ComfyUI"
 COMMIT = "4d64a8bc072b81c9b47321789b4d83fb7348ae2a"
-REVISION = "54472221d27c695fca9621b0c3ed52f06c4af707"
-FILES = [
-    "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
-    "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
-    "vae/minimax_h3_video_vae_int8_convrot.safetensors",
-    "vae/minimax_h3_audio_vae_fp32.safetensors",
-]
-IMAGE_REVISION = '0bb149f51e3156ed4b90dd45d5620346bfe1df8f'
-IMAGE_FILES = [
-    'diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors',
-    'text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
-    'vae/minimax_h3_image_vae_fp16.safetensors',
-]
 
 
 def selected_model():
@@ -100,20 +87,27 @@ def healthy():
 
 
 def restore_cloud_weights():
-    import requests
-
-    public = selected_model() == 'minimax-image-bf16'
-    key = 'minimax-image-bf16' if public else 'h3-image-g4-v1' if selected_model() == 'minimax-image' else 'h3-video-g4-v1'
-    cloud = None
-    if public:
+    """HF is primary; an optional Drive grant is used only if transfer fails."""
+    source = json.loads((ROOT / 'media-config.json').read_text()).get('weight_source', 'hf')
+    if source not in {'hf', 'drive'}:
+        raise ValueError('未知权重来源')
+    fallback = ROOT / 'bundle-config.json'
+    cloud = json.loads(fallback.read_text()) if fallback.exists() else None
+    model = selected_model()
+    key = {'minimax-h3': 'h3-video-g4-v1', 'minimax-image': 'h3-image-g4-v1',
+           'minimax-image-bf16': 'minimax-image-bf16'}[model]
+    if source == 'hf':
         index = json.loads((ROOT / 'public-weights.json').read_text())
     else:
-        cloud = json.loads((ROOT / 'bundle-config.json').read_text())
-        response = requests.get(cloud['base'] + '/' + key + '.json', timeout=30)
+        if not cloud:
+            raise RuntimeError('此自有模型需要网盘权重及只读授权')
+        import requests
+        response = requests.get(cloud['base'] + '/' + key + '.json', timeout=(5, 30))
         response.raise_for_status()
         index = response.json()
     if not index.get('weights_only') or index.get('preset') != key:
         raise ValueError('需要对应 H3 模型的纯权重部署包')
+    large = model == 'minimax-image-bf16'
     weights = ROOT / 'weights'
     available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
                      if line.startswith('MemAvailable:'))
@@ -125,18 +119,18 @@ def restore_cloud_weights():
         weights.mkdir(exist_ok=True)
         if any(weights.iterdir()):
             raise RuntimeError('权重目录非空，拒绝覆盖')
-        run(['mount', '-t', 'tmpfs', '-o', 'size=128G' if public else 'size=80G', 'workbench-weights', str(weights)])
-    elif public:
+        run(['mount', '-t', 'tmpfs', '-o', 'size=128G' if large else 'size=80G', 'workbench-weights', str(weights)])
+    elif large:
         run(['mount', '-o', 'remount,size=128G', str(weights)])
     stage('download', 'running', bytes=0, total_bytes=index['total_bytes'], files_done=0, files_total=len(index['files']))
     broker = ROOT / 'weight-download-grant.json'
+    broker.unlink(missing_ok=True)
     try:
-        if public:
-            result = restore(None, ROOT, workers=64, public_index=index)
-        else:
+        if cloud:
             broker.write_text(json.dumps({**cloud, 'bundle_id': key}))
             broker.chmod(0o600)
-            result = restore(broker, ROOT, workers=64)
+        result = restore(broker if broker.exists() else None, ROOT, workers=64,
+                         public_index=index if source == 'hf' else None)
         stage('download', 'completed', bytes=result['total_bytes'], total_bytes=result['total_bytes'],
               files_done=len(index['files']), files_total=len(index['files']), current=None)
     except BaseException:
@@ -203,19 +197,15 @@ def main():
                 raise RuntimeError("此预设需要 Blackwell GPU：请申请 G4 / RTX PRO 6000")
             if int(torch.version.cuda.split('.')[0]) < 13:
                 raise RuntimeError("INT8 ConvRot 预设需要 CUDA 13 的 PyTorch")
-            if (ROOT / 'bundle-config.json').exists() or selected_model() == 'minimax-image-bf16':
-                status('downloading', '权重下载到内存，同时安装 ComfyUI 环境')
-                done = threading.Event()
-                monitor = threading.Thread(target=monitor_download, args=(done,), daemon=True)
-                monitor.start()
-                try:
-                    prepare_in_parallel(restore_cloud_weights, install_environment)
-                finally:
-                    done.set()
-                    monitor.join(timeout=1)
-            else:
-                status('installing', '安装已验证版本的 ComfyUI')
-                install_environment()
+            status('downloading', '权重下载到内存，同时安装 ComfyUI 环境')
+            done = threading.Event()
+            monitor = threading.Thread(target=monitor_download, args=(done,), daemon=True)
+            monitor.start()
+            try:
+                prepare_in_parallel(restore_cloud_weights, install_environment)
+            finally:
+                done.set()
+                monitor.join(timeout=1)
             # Re-exec into the venv for downloads and serving after the install lock is released.
             run([str(ROOT / 'venv/bin/python'), str(ROOT / "deploy_remote.py"), "--download-and-serve"])
         except Exception as exc:
@@ -225,31 +215,15 @@ def main():
 
 
 def download_models():
-    if (ROOT / 'bundle-config.json').exists() or selected_model() == 'minimax-image-bf16':
-        records = restore_cloud_weights()
-        for item in records:
-            target = COMFY / 'models' / item['file']
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.is_symlink():
-                target.unlink()
-            if not target.exists():
-                target.symlink_to((ROOT / item['target']).resolve(strict=True))
-        (ROOT / 'assets.json').write_text(json.dumps(records))
-        return records
-    from huggingface_hub import hf_hub_download
-    records = []
-    files = IMAGE_FILES if selected_model() == 'minimax-image' else FILES
-    for index, filename in enumerate(files):
-        image_file = filename in IMAGE_FILES and not filename.startswith('text_encoders/')
-        repo, revision = ('Comfy-Org/MiniMax-H3-Image', IMAGE_REVISION) if image_file else ('Comfy-Org/MiniMax-H3', REVISION)
-        status("downloading", f"下载模型 {index + 1}/{len(files)} · {Path(filename).name}", file_index=index, total_files=len(files))
-        path = Path(hf_hub_download(repo, filename, revision=revision, cache_dir=str(ROOT / "hf-cache")))
-        target = COMFY / "models" / filename
+    records = restore_cloud_weights()
+    for item in records:
+        target = COMFY / 'models' / item['file']
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink():
+            target.unlink()
         if not target.exists():
-            target.symlink_to(path)
-        records.append({"file": filename, "bytes": path.stat().st_size, "revision": revision})
-    (ROOT / "assets.json").write_text(json.dumps(records))
+            target.symlink_to((ROOT / item['target']).resolve(strict=True))
+    (ROOT / 'assets.json').write_text(json.dumps(records))
     return records
 
 

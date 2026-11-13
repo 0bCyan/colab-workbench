@@ -156,6 +156,20 @@ class Bundles:
         self.leases[nonce] = {'owner': owner, 'keys': set(keys), 'expires': time.time() + 7200}
         return {'base': f'http://127.0.0.1:8190/{nonce}', 'local_port': self.port}
 
+    def optional_lease(self, owner, key, public_index):
+        """Offer a byte-identical mirror without making Drive a prerequisite for HF."""
+        if not key:
+            return None
+        try:
+            index = self.index(key)
+            def identity(data):
+                return sorted((item['target'], item['bytes'], item['sha256']) for item in data['files'])
+            if identity(index) != identity(public_index):
+                return None
+            return self.lease(owner, [key])
+        except (ValueError, OSError, configparser.Error, KeyError, TypeError):
+            return None
+
     def revoke(self, owner):
         self.leases = {nonce: item for nonce, item in self.leases.items() if item['owner'] != owner}
 

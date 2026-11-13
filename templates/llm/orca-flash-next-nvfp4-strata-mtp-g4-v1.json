@@ -1,6 +1,7 @@
 {
   "id": "orca-flash-next-nvfp4-strata-mtp-g4-v1",
   "bundle_id": "orca-flash-next-nvfp4-strata-mtp-g4-v1",
+  "weight_source": "drive",
   "name": "Flash-Next Uncensored · Strata MTP",
   "engine": "Strata",
   "quantization": "NVFP4",

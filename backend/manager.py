@@ -82,7 +82,7 @@ class Manager:
         preset = media_preset(model)
         if hasattr(self.colab, 'validate_connection'):
             self.colab.validate_connection(self.store.get('settings', 'main')['identity'])
-        if self.bundles and preset['bundle']:
+        if self.bundles and preset.get('weight_source') == 'drive':
             self.bundles.require([preset['bundle']])
         if account in self.stopping:
             raise ValueError("机器正在停止，请稍候")
@@ -147,14 +147,30 @@ class Manager:
                 deploy = (ROOT / "backend/deploy_remote.py").read_bytes()
                 telemetry = (ROOT / "backend/telemetry_remote.py").read_bytes()
                 preset = media_preset(model)
-                cloud = self.bundles.lease(account, [preset['bundle']]) if self.bundles and preset['bundle'] else None
+                public_index = json.loads((ROOT / 'templates' / preset['manifest']).read_text()) if preset.get('manifest') else None
+                cloud = None
+                if self.bundles:
+                    cloud = (self.bundles.optional_lease(account, preset['bundle'], public_index)
+                             if preset.get('weight_source') == 'hf'
+                             else self.bundles.lease(account, [preset['bundle']]))
                 if cloud:
                     cloud['bundle_id'] = media_preset(model)['bundle']
+                try:
+                    port = await self.colab.tunnel(account, session, self.store.get("settings", "main")["identity"],
+                                                   **({'reverse_port': cloud['local_port']} if cloud else {}))
+                except (RuntimeError, OSError, TimeoutError):
+                    if not cloud or preset.get('weight_source') != 'hf':
+                        raise
+                    self.bundles.revoke(account)
+                    cloud = None
+                    self.log(account, '网盘兜底通道不可用，继续使用 HF 直连')
+                    port = await self.colab.tunnel(account, session, self.store.get("settings", "main")["identity"])
+                self.machine(account, port=port, telemetry_port=self.colab.telemetry_ports.get(account))
                 bootstrap = self.store.directory / f"{account}-bootstrap.py"
                 bootstrap.write_text(
                     "import base64, subprocess, sys\nfrom pathlib import Path\n"
                     f"root=Path({REMOTE_ROOT!r}); root.mkdir(parents=True,exist_ok=True)\n"
-                    f"(root/'media-config.json').write_text({json.dumps({'model': model})!r})\n"
+                    f"(root/'media-config.json').write_text({json.dumps({'model': model, 'weight_source': preset.get('weight_source', 'drive')})!r})\n"
                     f"(root/'deploy-status.json').write_text({json.dumps({'phase': 'starting', 'model': model})!r})\n"
                     f"(root/'deploy_remote.py').write_bytes(base64.b64decode({base64.b64encode(deploy).decode()!r}))\n"
                     f"(root/'telemetry_remote.py').write_bytes(base64.b64decode({base64.b64encode(telemetry).decode()!r}))\n"
@@ -167,9 +183,6 @@ class Manager:
                     " p=subprocess.Popen([sys.executable,str(root/'deploy_remote.py')],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)\n"
                     "print('Deployment started',p.pid)\n"
                 )
-                port = await self.colab.tunnel(account, session, self.store.get("settings", "main")["identity"],
-                                               **({'reverse_port': cloud['local_port']} if cloud else {}))
-                self.machine(account, port=port, telemetry_port=self.colab.telemetry_ports.get(account))
                 self.log(account, await self.colab.execute(account, session, bootstrap))
                 check = self.store.directory / f"{account}-check.py"
                 check.write_text(
@@ -251,7 +264,7 @@ class Manager:
     def submit(self, account, graph, name, stop_after):
         validate_graph(graph)
         model = graph_model(graph)
-        if self.bundles and media_preset(model)['bundle']:
+        if self.bundles and media_preset(model).get('weight_source') == 'drive':
             self.bundles.require([media_preset(model)['bundle']])
         self.machine(account)
         if account in self.stopping:

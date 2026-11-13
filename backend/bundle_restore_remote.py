@@ -20,6 +20,10 @@ from urllib.parse import urlparse
 import requests
 
 
+class ChecksumError(ValueError):
+    """Downloaded bytes did not match the pinned model."""
+
+
 def prepare_in_parallel(download, environment):
     """Configure the interpreter while the independent weight transfer is running."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
@@ -38,6 +42,32 @@ def safe_path(root, name):
     return root / path
 
 def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www.googleapis.com/drive/v3/files/', public_index=None):
+    """Use HF first; only consult an optional, identical Drive mirror after failure."""
+    options = {'workers': workers, 'chunk_size': chunk_size, 'api_base': api_base}
+    try:
+        return _restore(broker, root, public_index=public_index, **options)
+    except (requests.RequestException, RuntimeError, PermissionError, ChecksumError):
+        if public_index is None or broker is None:
+            raise
+        try:
+            grant = json.loads(Path(broker).read_text())
+            response = requests.get(grant['base'].rstrip('/') + '/' + grant['bundle_id'] + '.json', timeout=(5, 30))
+            response.raise_for_status()
+            fallback = response.json()
+            def identity(index):
+                return sorted((item['target'], item['bytes'], item['sha256']) for item in index['files'])
+            if (not fallback.get('weights_only') or fallback.get('assemblies')
+                    or any(item.get('archive') for item in fallback['files'])
+                    or identity(fallback) != identity(public_index)):
+                raise ValueError('Drive fallback must match pinned HF weights')
+            print('HF download failed; using verified Drive mirror', flush=True)
+            # Keep the validated catalog fixed; previously verified files are reused.
+            return _restore(broker, root, drive_index=fallback, **options)
+        except Exception as fallback_error:
+            raise RuntimeError('HF 下载失败，网盘兜底也不可用；请检查下载源与网盘授权') from fallback_error
+
+
+def _restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www.googleapis.com/drive/v3/files/', public_index=None, drive_index=None):
     if type(workers) is not int or not 1 <= workers <= 256:
         raise ValueError('workers must be between 1 and 256')
     if type(chunk_size) is not int or chunk_size < 1:
@@ -54,7 +84,7 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
     status_path = root.parent / 'stream-restore-status.json'
     summary = {'files': [], 'downloaded_bytes': 0, 'cached_bytes': 0, 'verified_bytes': 0,
                'files_done': 0, 'workers': workers, 'buffer_limit_bytes': workers*chunk_size,
-               'requests': 0, 'retries': 0, 'http_errors': {}}
+               'requests': 0, 'retries': 0, 'http_errors': {}, 'source': 'hf' if public_index is not None else 'drive'}
 
     def remote_json(name):
         for attempt in range(12):
@@ -67,7 +97,7 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
                     raise
                 time.sleep(min(.5 * (attempt + 1), 2))
 
-    index = remote_json(grant.get('bundle_id', 'index') + '.json') if public_index is None else public_index
+    index = public_index if public_index is not None else drive_index if drive_index is not None else remote_json(grant.get('bundle_id', 'index') + '.json')
     summary['total_bytes'] = index['total_bytes']
     if not index.get('complete') or index.get('deployment_revision', 0) < 2:
         raise ValueError('Complete deployment revision 2+ required')
@@ -124,9 +154,9 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
                     for block in response.iter_content(1 << 20):
                         data.extend(block)
                         if len(data) > length:
-                            raise ValueError('Oversized range')
+                            raise ChecksumError('Oversized range')
                     if len(data) != length:
-                        raise ValueError('Truncated range')
+                        raise ChecksumError('Truncated range')
                     return data
             except PermissionError:
                 raise
@@ -184,7 +214,7 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
             if current_job is None:
                 return
             if part_size != current_job['bytes'] or (is_assembly and part_sha.hexdigest() != current_job['sha256']):
-                raise ValueError('Part SHA256 mismatch: '+current_job['name'])
+                raise ChecksumError('Part SHA256 mismatch: '+current_job['name'])
 
         save('downloading '+relative)
         with temporary.open('wb', buffering=0) as stream, concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -221,7 +251,7 @@ def restore(broker, root, workers=64, chunk_size=64 << 20, api_base='https://www
             verify_part()
             os.fsync(stream.fileno())
         if written != target['bytes'] or whole_sha.hexdigest() != target['sha256']:
-            raise ValueError('Logical file SHA256 mismatch: '+relative)
+            raise ChecksumError('Logical file SHA256 mismatch: '+relative)
         temporary.replace(path)
         row = {'target':relative, 'bytes':written, 'seconds':time.perf_counter()-begin, 'sha256_verified':True}
         row['MB_s'] = written/row['seconds']/1e6

@@ -1,9 +1,11 @@
 """Creative model precision profiles and their weight sources."""
 MEDIA = {
-    'video': {'model': 'minimax-h3', 'bundle': 'h3-video-g4-v1', 'template': 'h3-int8.json', 'name': 'H3 视频'},
-    'image': {'model': 'minimax-image', 'bundle': 'h3-image-g4-v1', 'template': 'h3-image.json', 'name': 'H3 图片'},
+    'video': {'model': 'minimax-h3', 'bundle': 'h3-video-g4-v1', 'template': 'h3-int8.json',
+              'weight_source': 'hf', 'manifest': 'h3-video-weights.json', 'name': 'H3 视频'},
+    'image': {'model': 'minimax-image', 'bundle': 'h3-image-g4-v1', 'template': 'h3-image.json',
+              'weight_source': 'hf', 'manifest': 'h3-image-weights.json', 'name': 'H3 图片'},
     'image_bf16': {'model': 'minimax-image-bf16', 'bundle': None, 'template': 'h3-image-bf16.json',
-                   'manifest': 'h3-image-bf16-weights.json', 'name': 'H3 图片'},
+                   'weight_source': 'hf', 'manifest': 'h3-image-bf16-weights.json', 'name': 'H3 图片'},
 }
 
 

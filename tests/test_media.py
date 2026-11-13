@@ -71,15 +71,17 @@ async def test_image_then_video_reuses_vm_and_retains_both_models(tmp_path):
         store.close()
 
 
-async def test_missing_image_bundle_submission_does_not_allocate(tmp_path):
+async def test_image_submission_uses_hf_without_drive(tmp_path):
     from backend.bundles import Bundles
     store, fake = Store(tmp_path), FakeColab()
     manager = Manager(store, fake, PROFILES, Bundles(tmp_path))
+    await manager.open()
     try:
-        with pytest.raises(ValueError, match='h3-image-g4-v1'):
-            manager.submit('colab2', image_graph(), 'image', False)
-        assert not fake.calls and not store.all('jobs')
+        job = manager.submit('colab2', image_graph(), 'image', False)
+        await eventually(lambda: manager.job(job['id'])['status'] == 'completed')
+        assert manager.job(job['id'])['outputs'][0]['filename'].endswith('.png')
     finally:
+        await manager.close()
         store.close()
 
 

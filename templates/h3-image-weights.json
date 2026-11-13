@@ -1,0 +1,50 @@
+{
+  "preset": "h3-image-g4-v1",
+  "complete": true,
+  "deployment_revision": 2,
+  "weights_only": true,
+  "files": [
+    {
+      "name": "diffusion_models__minimax_h3_image_pruned_int8_convrot.safetensors",
+      "target": "weights/diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors",
+      "bytes": 20979314802,
+      "sha256": "83eb140f1ff95c068f8a6886e6d3f3d0d4ab2e07bb2fe6d2ef992a51146ee622",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image/resolve/0bb149f51e3156ed4b90dd45d5620346bfe1df8f/diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors"
+    },
+    {
+      "name": "text_encoders__qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "target": "weights/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "bytes": 15687142551,
+      "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/54472221d27c695fca9621b0c3ed52f06c4af707/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+    },
+    {
+      "name": "vae__minimax_h3_image_vae_fp16.safetensors",
+      "target": "weights/vae/minimax_h3_image_vae_fp16.safetensors",
+      "bytes": 1168505312,
+      "sha256": "d80e9c2e5cfc9844869961ff5a58c9a9e52182df6bfb30b26018dd7f348721af",
+      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image/resolve/0bb149f51e3156ed4b90dd45d5620346bfe1df8f/vae/minimax_h3_image_vae_fp16.safetensors"
+    }
+  ],
+  "assets": [
+    {
+      "file": "diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors",
+      "target": "weights/diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors",
+      "revision": "0bb149f51e3156ed4b90dd45d5620346bfe1df8f",
+      "bytes": 20979314802
+    },
+    {
+      "file": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "target": "weights/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+      "bytes": 15687142551
+    },
+    {
+      "file": "vae/minimax_h3_image_vae_fp16.safetensors",
+      "target": "weights/vae/minimax_h3_image_vae_fp16.safetensors",
+      "revision": "0bb149f51e3156ed4b90dd45d5620346bfe1df8f",
+      "bytes": 1168505312
+    }
+  ],
+  "total_bytes": 37834962665
+}

@@ -199,3 +199,119 @@ def test_public_pinned_weights_use_ranges_without_credentials_and_verify_sha256(
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize('mode', ['hf', 'hf-no-fallback', 'fallback', 'corrupt', 'mismatch', 'drive-only'])
+def test_hf_priority_and_optional_matching_drive_fallback(tmp_path, monkeypatch, mode):
+    import requests
+    blobs = {'large': b'large verified tensor' * 1024, 'small': b'small tensor' * 64}
+    files = [{'name': name, 'target': 'weights/' + name, 'bytes': len(data),
+              'sha256': hashlib.sha256(data).hexdigest(), 'file_id': name,
+              'url': 'https://huggingface.co/synthetic/test/resolve/' + 'a' * 40 + '/' + name}
+             for name, data in blobs.items()]
+    index = {'preset': 'h3-video-g4-v1', 'complete': True, 'deployment_revision': 2, 'weights_only': True,
+             'files': files, 'total_bytes': sum(map(len, blobs.values()))}
+    mirror = {**index, 'files': [{**file} for file in files]}
+    if mode == 'mismatch':
+        mirror['files'][1]['sha256'] = '0' * 64
+    reads = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split('?')[0]
+            reads.append(path)
+            if path.endswith('.json'):
+                data, code = json.dumps(mirror).encode(), 200
+            elif path == '/token':
+                data, code = json.dumps({'scope': 'https://www.googleapis.com/auth/drive.readonly',
+                                          'access_token': 'fake', 'expires_at': time.time() + 3600}).encode(), 200
+            else:
+                if path.startswith('/hf/'):
+                    assert not self.headers.get('Authorization')
+                else:
+                    assert self.headers['Authorization'] == 'Bearer fake'
+                name = path.rsplit('/', 1)[1]
+                start, end = map(int, self.headers['Range'][6:].split('-'))
+                data, code = blobs[name][start:end + 1], 206
+                if path == '/hf/small':
+                    if mode in {'fallback', 'mismatch', 'hf-no-fallback'}:
+                        data, code = b'Unavailable', 403
+                    elif mode == 'corrupt':
+                        data = bytes([data[0] ^ 1]) + data[1:]
+            self.send_response(code)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    native_session = requests.Session
+
+    class LocalSource:
+        def __init__(self):
+            self.http = native_session()
+
+        def get(self, url, **kwargs):
+            if url.startswith('https://huggingface.co/'):
+                url = base + '/hf/' + url.rsplit('/', 1)[1]
+            return self.http.get(url, **kwargs)
+
+    monkeypatch.setattr(requests, 'Session', LocalSource)
+    broker = tmp_path / 'grant.json'
+    broker.write_text(json.dumps({'base': base, 'bundle_id': index['preset']}))
+    root = tmp_path / 'restored'
+    try:
+        options = {'workers': 2, 'chunk_size': 1024, 'api_base': base + '/drive/',
+                   'public_index': None if mode == 'drive-only' else index}
+        if mode == 'mismatch':
+            with pytest.raises(RuntimeError, match='网盘兜底也不可用'):
+                restore(broker, root, **options)
+            assert not any(path.startswith('/drive/') for path in reads)
+            assert not (root / 'weights/small').exists()
+        elif mode == 'hf-no-fallback':
+            with pytest.raises(PermissionError, match='403'):
+                restore(None, root, **options)
+            assert all(path.startswith('/hf/') for path in reads)
+        else:
+            result = restore(broker, root, **options)
+            for name, data in blobs.items():
+                assert (root / 'weights' / name).read_bytes() == data
+            assert result['source'] == ('hf' if mode == 'hf' else 'drive')
+            assert result['bytes'] == result['verified_bytes'] == index['total_bytes']
+            if mode == 'hf':
+                assert all(path.startswith('/hf/') for path in reads)
+            elif mode == 'drive-only':
+                assert not any(path.startswith('/hf/') for path in reads)
+            else:
+                assert '/token' in reads and '/drive/small' in reads
+                assert '/drive/large' not in reads  # Completed HF files remain verified and cached.
+                assert result['cached_bytes'] == len(blobs['large'])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_optional_mirror_does_not_require_drive_and_rejects_different_weights(tmp_path, monkeypatch):
+    bundles = Bundles(tmp_path)
+    monkeypatch.setattr(bundles, 'reader_config', lambda: tmp_path / 'missing-reader.conf')
+    key = 'h3-video-g4-v1'
+    assert bundles.optional_lease('owner', key, {}) is None
+    assert bundles.optional_lease('owner', None, {}) is None
+    index = {'preset': key, 'complete': True, 'deployment_revision': 2, 'weights_only': True, 'total_bytes': 1,
+             'files': [{'name': 'model', 'target': 'weights/model', 'bytes': 1, 'sha256': 'a' * 64, 'file_id': 'fake'}]}
+    bundles.directory.mkdir()
+    (bundles.directory / (key + '.json')).write_text(json.dumps(index))
+    assert bundles.optional_lease('owner', key, index) is None  # No reader authorization.
+    calls = []
+    monkeypatch.setattr(bundles, 'lease', lambda *args: calls.append(args) or {'base': 'synthetic'})
+    assert bundles.optional_lease('owner', key, index) == {'base': 'synthetic'}
+    calls.clear()
+    other = {**index, 'files': [{**index['files'][0], 'sha256': 'b' * 64}]}
+    assert bundles.optional_lease('owner', key, other) is None
+    assert not calls

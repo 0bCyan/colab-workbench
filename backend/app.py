@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .access import Access, Login, required_from_environment
 from .bundles import Bundles
 from .colab import Colab, clean
 from .config import COMFY_COMMIT, DATA, MODEL_FILES, MODEL_REVISION, ROOT, profiles
@@ -115,6 +116,7 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
         lock = FileLock(directory / "server.lock", timeout=0)
         with lock:
             store = Store(directory)
+            app.state.access = Access(directory, store, required_from_environment())
             # Keep live sessions visible even if their launcher was removed.
             account_profiles[:] = configured_profiles if configured_profiles is not None else profiles(
                 machine["account"] for machine in store.all("machines") + store.all("llm") + store.all("llm_instances") if machine.get("session")
@@ -160,6 +162,10 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 supplied = supplied if scheme.lower() == 'bearer' else request.headers.get('x-api-key', '')
                 if not secrets.compare_digest(supplied.encode(), app.state.llm.key().encode()):
                     error = JSONResponse({"error": {"message": "服务密钥无效", "type": "authentication_error"}}, status_code=401)
+            elif (request.url.path.startswith(('/api/', '/reference/'))
+                  and request.url.path not in {'/api/auth/session', '/api/auth/login'}
+                  and app.state.access.enabled and not app.state.access.user(request)):
+                error = JSONResponse({'detail': '请先登录工作台'}, status_code=401)
             elif request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-workbench-token") != token:
                 error = JSONResponse({"detail": "工作台会话已变化，请刷新页面"}, status_code=403)
 
@@ -193,6 +199,20 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
 
     def store():
         return app.state.store
+
+    @app.get('/api/auth/session')
+    async def access_session(request: Request):
+        access = app.state.access
+        user = access.user(request)
+        return {'required': access.enabled, 'authenticated': bool(user), 'username': user, 'csrf': token}
+
+    @app.post('/api/auth/login')
+    async def access_login(request: Request, body: Login):
+        return await app.state.access.login(request, body)
+
+    @app.post('/api/auth/logout')
+    async def access_logout(request: Request):
+        return app.state.access.logout(request)
 
     @app.get("/api/state")
     async def state():
@@ -431,6 +451,10 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
 
     dist = ROOT / "frontend/dist"
     if dist.is_dir():
+        @app.get('/login')
+        async def login_page():
+            return FileResponse(dist / 'index.html', headers={'Cache-Control': 'no-store'})
+
         app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
     return app
 

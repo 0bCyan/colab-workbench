@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, Image as ImageIcon, FolderOpen, LayoutGrid, LoaderCircle, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Server, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, Check, CircleHelp, Cloud, Cpu, Download, ExternalLink, FileJson, Film, Image as ImageIcon, FolderOpen, LayoutGrid, LoaderCircle, LogOut, MoreHorizontal, Network, Play, Plus, Power, RefreshCw, Save, Server, Settings2, SlidersHorizontal, Sparkles, Terminal, Upload, X } from 'lucide-react'
 import Workflow from './Workflow'
 import Library from './Library'
 import Performance from './Performance'
@@ -12,6 +12,7 @@ import { type State, type Draft, type Job, type Settings, type Graph, activeStat
 let csrf = ''
 async function api<T = unknown>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch('/api' + path, { method, headers: { 'Content-Type': 'application/json', 'X-Workbench-Token': csrf }, body: body === undefined ? undefined : JSON.stringify(body) })
+  if (response.status === 401) window.dispatchEvent(new Event('workbench-session-expired'))
   if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail ?? response.statusText)) }
   return response.json()
 }
@@ -20,7 +21,7 @@ const savedDraft = (draft: Draft): Draft => ({ ...draft, name: draft.name.trim()
 const isImageGraph = (graph: Graph | undefined) => !!getNode(graph, 'MiniMaxH3ImageConditioning')
 const getNode = (graph: Graph | undefined, type: string) => Object.values(graph ?? {}).find(n => n.class_type === type)
 
-export default function App() {
+export default function App({ accountName, signOut }: { accountName?: string; signOut?: () => Promise<void> }) {
   const [connected, setConnected] = useState(false)
   const [state, setState] = useState<State | null>(null)
   const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || '')
@@ -201,7 +202,7 @@ export default function App() {
       <div className="rail-nav"><button aria-label="创作工作台" title="创作工作台" className={page === 'studio' ? 'active' : ''} onClick={() => setPage('studio')}><SlidersHorizontal size={20} /><span>创作</span></button>
         <button aria-label="成片与任务" title="成片与任务" className={page === 'library' ? 'active' : ''} onClick={() => setPage('library')}><LayoutGrid size={20} /><span>作品</span>{running.length > 0 && <i />}</button>
         <button aria-label="模型服务" title="模型服务" className={page === 'services' ? 'active' : ''} onClick={() => setPage('services')}><Server size={20} /><span>服务</span>{state.llm?.services.some(s => s.session) && <i />}</button></div>
-      <div className="rail-bottom"><button aria-label="使用说明" title="使用说明" onClick={() => setModal('help')}><CircleHelp size={20} /></button><button aria-label="工作台设置" title="设置" aria-haspopup="dialog" className={modal === 'settings' ? 'active' : ''} onClick={() => setModal('settings')}><Settings2 size={20} /></button></div>
+      <div className="rail-bottom">{signOut && <button aria-label="退出登录" title={`${accountName ?? ''} · 退出登录`} onClick={() => signOut().catch(e => setError(e.message))}><LogOut size={20} /></button>}<button aria-label="使用说明" title="使用说明" onClick={() => setModal('help')}><CircleHelp size={20} /></button><button aria-label="工作台设置" title="设置" aria-haspopup="dialog" className={modal === 'settings' ? 'active' : ''} onClick={() => setModal('settings')}><Settings2 size={20} /></button></div>
     </aside>
     <div className="workspace">
       <header className="workspace-header">

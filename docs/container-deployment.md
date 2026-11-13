@@ -1,6 +1,6 @@
 # 容器部署与 SSH 访问
 
-此部署运行工作台控制端；模型计算仍由按需申请的 Colab GPU 完成，服务器无需安装 CUDA。当前仅通过 SSH 转发访问，不提供公网入口。OAuth 登录、域名及 HTTPS 反向代理留待后续实现。
+此部署运行工作台控制端；模型计算仍由按需申请的 Colab GPU 完成，服务器无需安装 CUDA。当前仅通过 SSH 转发访问，使用固定账号登录，不提供注册及公网入口。OAuth、域名及 HTTPS 反向代理留待后续实现。
 
 ## 组成
 
@@ -72,7 +72,22 @@ docker compose logs --tail 80 workbench
 
 数据库和作品存于 `runtime/data`，账号和 Drive 配置在同一私有持久卷中。备份必须私下保存，使用 SQLite backup API 或停止容器后备份，不能只拷贝活跃 SQLite 主文件而遗漏 WAL。恢复时不要覆盖其他控制端的新令牌或把旧运行状态当作现存 VM。
 
-当前没有公网用户认证。后续绑定域名前，需要先实现 OAuth、授权用户限制、回调校验及相关代理头／Host 策略，再开放入口。
+## 工作台登录
+
+服务器使用固定账号和密码登录，没有注册入口，也没有注册 API。账号配置位于 `runtime/data/access.json`，只保存随机加盐的 scrypt 哈希；明文密码不写入源码、镜像或日志。浏览器使用 HttpOnly／SameSite=Lax Cookie，会话有效期 12 小时，服务器仅保存会话令牌的 SHA256。退出登录会撤销该会话；改密码并重启后旧会话全部失效。连续错误登录有短时限流，登录和退出同样检查来源及 CSRF。
+
+未登录时保护工作台 API、作品下载及参考素材；LLM 客户端继续使用独立 Bearer／x-api-key，不借用浏览器登录。Colab 和 Drive 的 OAuth 授权与这个工作台登录各自独立。
+
+管理员通过 SSH 交互设置账号，密码不放在命令参数里：
+
+```sh
+docker compose exec workbench python container/set-access.py <username>
+docker compose restart workbench
+```
+
+服务器 `.env` 设置 `WORKBENCH_AUTH_REQUIRED=true` 后，配置缺失或无效会拒绝启动，避免静默关闭认证。首次初始化可以先在仅回环绑定的容器中设置账号，再启用该项并重新创建容器；后续修改只需重启。纯本机开发默认关闭账号登录，存在 `access.json` 时自动启用。
+
+当前实现为固定账号密码登录，尚未接第三方 OAuth。后续绑定域名前，再实现 OAuth、授权用户限制、回调校验及代理头／Host 策略。HTTPS 下 Cookie 会添加 Secure；当前 SSH 转发使用 HTTP 回环访问。
 
 ## 本次部署验证范围
 

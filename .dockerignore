@@ -12,6 +12,7 @@
 !container/cli-requirements.txt
 !container/entrypoint.sh
 !container/colab-account.py
+!container/set-access.py
 !frontend/
 !frontend/package.json
 !frontend/package-lock.json

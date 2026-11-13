@@ -4,6 +4,8 @@ services:
     build: .
     init: true
     restart: unless-stopped
+    environment:
+      WORKBENCH_AUTH_REQUIRED: ${WORKBENCH_AUTH_REQUIRED:-false}
     ports:
       - "127.0.0.1:${WORKBENCH_PORT:-8765}:8765"
     volumes:
@@ -16,6 +18,12 @@ services:
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 8m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/auth/session', timeout=4).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     logging:
       driver: json-file
       options:

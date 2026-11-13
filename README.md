@@ -123,7 +123,7 @@ print(response.choices[0].message.content)
 
 ## 容器与服务器
 
-Docker Compose 的安装、同版 CLI 多账号迁移及 SSH 转发见 [容器部署文档](docs/container-deployment.md)。默认仅绑定服务器回环地址，不开放公网；OAuth 与域名接入尚未实现。
+Docker Compose 的安装、同版 CLI 多账号迁移及 SSH 转发见 [容器部署文档](docs/container-deployment.md)。默认仅绑定服务器回环地址，服务器使用固定账号登录、没有注册入口；第三方 OAuth 与域名接入尚未实现。
 
 ## 云盘权重与并行初始化
 

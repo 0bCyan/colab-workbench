@@ -33,6 +33,6 @@ ENV HOME=/var/lib/workbench \
 USER 10001:10001
 EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=4).close()"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/auth/session', timeout=4).close()"
 ENTRYPOINT ["/app/container/entrypoint.sh"]
 CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8765", "--timeout-graceful-shutdown", "420", "--no-access-log"]

@@ -88,3 +88,18 @@ async def test_sessions_survive_process_config_reload_but_not_password_change(se
     original.path.write_text(json.dumps(config))
     app.state.access = Access(original.path.parent, app.state.store, required=True)
     assert (await client.get('/api/state')).status_code == 401
+
+
+async def test_explicit_public_host_uses_secure_cookie_and_rejects_other_hosts(tmp_path, monkeypatch):
+    monkeypatch.setenv('WORKBENCH_ALLOWED_HOSTS', 'work.example.invalid')
+    monkeypatch.setenv('WORKBENCH_AUTH_REQUIRED', 'true')
+    (tmp_path / 'access.json').write_text(json.dumps({'username': 'tester', 'password_hash': password_hash('test-password')}))
+    app = create_app(tmp_path, driver=FakeColab(), account_profiles=PROFILES)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='https://work.example.invalid') as client:
+            status = (await client.get('/api/auth/session')).json()
+            client.headers['x-workbench-token'] = status['csrf']
+            response = await login(client)
+            assert response.status_code == 200 and 'secure' in response.headers['set-cookie'].lower()
+            assert (await client.get('/api/state')).status_code == 200
+            assert (await client.get('/api/auth/session', headers={'host': 'untrusted.invalid'})).status_code == 400

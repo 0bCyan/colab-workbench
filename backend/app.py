@@ -141,7 +141,10 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 store.close()
 
     app = FastAPI(title="Colab Workbench", lifespan=lifespan, docs_url=None, redoc_url=None)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
+    allowed_hosts = ['localhost', '127.0.0.1', 'testserver', *(
+        host.strip() for host in os.environ.get('WORKBENCH_ALLOWED_HOSTS', '').split(',') if host.strip()
+    )]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
     class LocalOnly:
         # ASGI middleware keeps disconnects attached to the streaming request.

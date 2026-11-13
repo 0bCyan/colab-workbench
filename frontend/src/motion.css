@@ -1,0 +1,23 @@
+/* Material-inspired timing; layout, surfaces and colors stay in the existing stylesheets. */
+:root{--motion-standard:cubic-bezier(.2,0,0,1);--motion-enter:cubic-bezier(0,0,0,1);--motion-short:120ms;--motion-medium:220ms}
+@media(prefers-reduced-motion:no-preference){
+  button,a,input,select,textarea{transition-property:background-color,border-color,color,box-shadow,opacity;transition-duration:var(--motion-short);transition-timing-function:var(--motion-standard)}
+  button,.primary,.secondary,.icon-button,.text-button{transition-property:background-color,border-color,color,box-shadow,opacity,transform}
+  button:active:not(:disabled),a.primary:active,a.secondary:active{transform:scale(.975);transition-duration:80ms}
+  .studio-grid,.library,.services-grid,.service-toolbar,.preview-wrap,.workflow-space,.service-example,.service-progress{animation:workbench-fade 180ms var(--motion-enter) both}
+  .access-card{animation:workbench-arrive 260ms var(--motion-enter) both}
+  .modal[open]{animation:workbench-dialog 220ms var(--motion-enter) both}
+  .modal[open]::backdrop{animation:workbench-fade 180ms var(--motion-standard) both}
+  .toast,.error-banner,.access-error,.service-alert,.current-job,.selection-bar{animation:workbench-fade 160ms var(--motion-enter) both}
+  .job-card,.service-presets>button,.settings-account{transition:background-color var(--motion-short) var(--motion-standard),border-color var(--motion-short) var(--motion-standard),box-shadow var(--motion-medium) var(--motion-standard)}
+  .metric-bar>span,.progress-track>span,.service-transfer-bar>span{transition:width 320ms var(--motion-standard),background-color var(--motion-medium) var(--motion-standard)}
+  .service-progress li,.service-progress-icon,.status-chip,.tiny-dot,.metric-status i{transition:background-color var(--motion-medium) var(--motion-standard),border-color var(--motion-medium) var(--motion-standard),color var(--motion-medium) var(--motion-standard),opacity var(--motion-medium) var(--motion-standard)}
+  .setting-switch>span,.setting-switch>span:after{transition-duration:var(--motion-medium);transition-timing-function:var(--motion-standard)}
+  .play-overlay{transition:opacity var(--motion-short) var(--motion-standard)}
+}
+@keyframes workbench-fade{from{opacity:0}to{opacity:1}}
+@keyframes workbench-arrive{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes workbench-dialog{from{opacity:0;transform:translateY(6px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){
+  *,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}

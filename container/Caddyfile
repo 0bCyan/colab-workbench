@@ -1,0 +1,14 @@
+{
+	admin off
+}
+
+{$WORKBENCH_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy workbench:8765 {
+		flush_interval -1
+	}
+}
+
+{$WORKBENCH_WWW_DOMAIN} {
+	redir https://{$WORKBENCH_DOMAIN}{uri} permanent
+}

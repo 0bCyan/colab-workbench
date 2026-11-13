@@ -1,6 +1,6 @@
 # 容器部署与 SSH 访问
 
-此部署运行工作台控制端；模型计算仍由按需申请的 Colab GPU 完成，服务器无需安装 CUDA。当前仅通过 SSH 转发访问，使用固定账号登录，不提供注册及公网入口。OAuth、域名及 HTTPS 反向代理留待后续实现。
+此部署运行工作台控制端；模型计算仍由按需申请的 Colab GPU 完成，服务器无需安装 CUDA。默认通过 SSH 转发访问；可叠加 HTTPS 配置，用 Caddy 自动管理域名证书。使用固定账号登录，不提供注册；第三方 OAuth 尚未接入。
 
 ## 组成
 
@@ -87,7 +87,24 @@ docker compose restart workbench
 
 服务器 `.env` 设置 `WORKBENCH_AUTH_REQUIRED=true` 后，配置缺失或无效会拒绝启动，避免静默关闭认证。首次初始化可以先在仅回环绑定的容器中设置账号，再启用该项并重新创建容器；后续修改只需重启。纯本机开发默认关闭账号登录，存在 `access.json` 时自动启用。
 
-当前实现为固定账号密码登录，尚未接第三方 OAuth。后续绑定域名前，再实现 OAuth、授权用户限制、回调校验及代理头／Host 策略。HTTPS 下 Cookie 会添加 Secure；当前 SSH 转发使用 HTTP 回环访问。
+当前实现为固定账号密码登录，尚未接第三方 OAuth。域名入口强制登录并限制 Host；HTTPS 下 Cookie 添加 Secure，SSH 转发仍使用 HTTP 回环访问。
+
+## 域名与 HTTPS
+
+先设置固定账号并确认服务器私有登录配置有效，将主域名及 www 别名的 DNS 指向服务器，确认端口 80／443 可用。在服务器 `.env` 中加入：
+
+```dotenv
+WORKBENCH_AUTH_REQUIRED=true
+WORKBENCH_DOMAIN=work.example.com
+WORKBENCH_WWW_DOMAIN=www.work.example.com
+COMPOSE_FILE=compose.yaml:compose.https.yaml
+```
+
+保留部署时的 `WORKBENCH_IMAGE_TAG`，随后执行 `docker compose up -d --no-build`。HTTPS 叠加配置会强制登录、明确限定 Host，并启动 Caddy；主域名提供工作台，www 别名保留路径跳转到主域名，HTTP 自动转到 HTTPS。证书和续期状态保存在 `runtime/caddy/`，不可在更新镜像时删除。
+
+后端宿主端口仍只绑定回环地址；公网流量由 Caddy 通过专用 Compose 网络转发。应用仅在该部署下信任反向代理头，以识别 HTTPS 并设置 Secure 会话 Cookie。LLM 流式接口配置即时转发，保留独立 API Key 验证；登录页和静态资源可访问，私有 API 和作品下载要求登录。
+
+域名启用后仍可经 SSH 使用原有回环入口。当前公网访问保护使用固定账号密码，不依赖第三方 OAuth；以后接入 OAuth 可保留相同登录页面和会话保护。
 
 ## 本次部署验证范围
 

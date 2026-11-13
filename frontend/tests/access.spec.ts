@@ -39,4 +39,7 @@ test('fixed-account login gates workspace, handles failures and supports logout 
   await expect(page.getByRole('button', { name: '登录', exact: true })).toBeInViewport()
   expect(await page.evaluate(() => ({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }))).toEqual({ width: 390, height: 844 })
   await page.screenshot({ path: '../screenshots/review/access-login-mobile.png' })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  expect(await page.locator('.access-card').evaluate(el => getComputedStyle(el).animationName)).toBe('none')
+  expect(await page.getByRole('button', { name: '登录', exact: true }).evaluate(el => getComputedStyle(el).transitionDuration)).toBe('0s')
 })

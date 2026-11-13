@@ -51,15 +51,13 @@ export default function Access() {
   if (session && (!session.required || session.authenticated)) return <App accountName={session.username ?? undefined} signOut={session.required ? logout : undefined} />
   return <main className="access-page">
     <section className="access-card" aria-label="工作台登录">
-      <div className="access-eyebrow"><span /> 创作工作台</div>
-      <h1>登录工作台</h1><p className="access-description">继续创作与管理模型服务</p>
+      <h1>登录工作台</h1>
       {!session ? <div className="access-connecting" role="status">{connectionError ? <><p role="alert">{connectionError}</p><button className="secondary" onClick={() => load().catch(e => setConnectionError(e.message))}>重新连接</button></> : <><LoaderCircle size={18} className="spin" /> 正在连接…</>}</div> : <form onSubmit={login}>
         <label className="access-field"><span>账号</span><input name="username" aria-label="登录账号" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={e => setUsername(e.target.value)} disabled={busy} maxLength={100} required autoFocus /></label>
         <label className="access-field"><span>密码</span><div className="access-password"><input name="password" aria-label="登录密码" type={visible ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} disabled={busy} maxLength={1024} required /><button type="button" className="icon-button" aria-label={visible ? '隐藏密码' : '显示密码'} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>
         {error && <p className="access-error" role="alert">{error}</p>}
         <button className="primary access-submit" disabled={busy || !username.trim() || !password}>{busy ? <><LoaderCircle size={16} className="spin" />登录中…</> : <>登录<ArrowRight size={17} /></>}</button>
       </form>}
-      <footer>仅限已授权账号</footer>
     </section>
   </main>
 }

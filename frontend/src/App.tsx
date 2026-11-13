@@ -7,7 +7,8 @@ import Dialog from './Dialog'
 import SettingsDialog from './SettingsDialog'
 import Resolution, { validResolution, resolutionError, imageResolutionError } from './Resolution'
 import Services from './Services'
-import { type State, type Draft, type Job, type Settings, type Graph, activeStatuses, phaseLabel, statusLabel } from './types'
+import ServiceProgress from './ServiceProgress'
+import { type State, type Draft, type Job, type Settings, type Graph, type Machine, activeStatuses, phaseLabel, statusLabel } from './types'
 
 let csrf = ''
 async function api<T = unknown>(path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -43,8 +44,33 @@ export default function App({ accountName, signOut }: { accountName?: string; si
   const fileInput = useRef<HTMLInputElement>(null)
   const known = useRef(new Set<string>())
   const draftRevision = useRef(0)
+  const stateRequest = useRef<Promise<State> | null>(null)
+  const updateMachine = useCallback((key: string, kind: 'media' | 'llm', machine: Machine) => {
+    setState(previous => {
+      if (!previous) return previous
+      const current = kind === 'media' ? previous.accounts.find(a => a.id === key)?.machine : previous.llm?.services.find(s => s.id === key)
+      if (!current || current.session !== machine.session || (current.updated_at ?? 0) > (machine.updated_at ?? 0)) return previous
+      if (kind === 'media') return { ...previous, accounts: previous.accounts.map(a => a.id === key ? { ...a, machine } : a) }
+      return { ...previous, llm: previous.llm && { ...previous.llm, services: previous.llm.services.map(s => s.id === key ? { ...s, ...machine } : s) } }
+    })
+  }, [])
   const refresh = useCallback(async () => {
-    const next = await api<State>('/state'); csrf = next.token; setState(next); setConnected(true); setError(previous => previous.startsWith('本地服务连接中断') ? '' : previous)
+    if (stateRequest.current) return stateRequest.current
+    const request = api<State>('/state')
+    stateRequest.current = request
+    let next: State
+    try { next = await request } finally { if (stateRequest.current === request) stateRequest.current = null }
+    csrf = next.token; setState(previous => {
+      if (!previous) return next
+      // A metrics response can be newer than a state request already in flight.
+      return { ...next, accounts: next.accounts.map(a => {
+        const current = previous.accounts.find(p => p.id === a.id)?.machine
+        return current && (current.updated_at ?? 0) > (a.machine.updated_at ?? 0) ? { ...a, machine: current } : a
+      }), llm: next.llm && { ...next.llm, services: next.llm.services.map(s => {
+        const current = previous.llm?.services.find(p => p.id === s.id)
+        return current && (current.updated_at ?? 0) > (s.updated_at ?? 0) ? current : s
+      }) } }
+    }); setConnected(true); setError(previous => previous.startsWith('本地服务连接中断') ? '' : previous)
     return next
   }, [])
 
@@ -64,7 +90,7 @@ export default function App({ accountName, signOut }: { accountName?: string; si
         setDraft(fresh)
       }
     }).catch(e => setError(String(e.message)))
-    const timer = window.setInterval(() => refresh().catch(() => { setConnected(false); setError('本地服务连接中断，请确认启动窗口仍在运行。') }), 2500)
+    const timer = window.setInterval(() => refresh().catch(() => { setConnected(false); setError('本地服务连接中断，请确认启动窗口仍在运行。') }), 1000)
     return () => { alive = false; clearInterval(timer) }
   }, [refresh])
 
@@ -230,7 +256,7 @@ export default function App({ accountName, signOut }: { accountName?: string; si
         </section>
 
         <section className="stage-column"><div className="stage panel"><header className="stage-heading"><div className="segmented"><button className={view === 'preview' ? 'active' : ''} onClick={() => setView('preview')}><Play size={13} /> 预览</button><button className={view === 'workflow' ? 'active' : ''} onClick={() => setView('workflow')}><Network size={13} /> 工作流</button></div><span className="subtle">{view === 'preview' ? imageMode ? '画面' : '画面 · 声音' : `${Object.keys(draft.graph).length} 个节点`}</span></header>
-          {view === 'workflow' ? <Workflow draft={draft} update={setDraft} openJson={openJson} nativeUrl={nativeUrl} fail={setError} /> : video || images.length ? <div className="preview-wrap"><div className="preview-top"><span className="preview-badge"><span className="tiny-dot" />本地成片</span><span className="preview-corner">H3 / {(displayedJob?.model ?? model).endsWith('bf16') ? 'BF16' : 'INT8'}</span></div>
+          {view === 'workflow' ? <Workflow draft={draft} update={setDraft} openJson={openJson} nativeUrl={nativeUrl} fail={setError} /> : machine && (['checking', 'provisioning', 'deploying', 'error'].includes(machine.phase) || running.length > 0) ? <div className="media-loading"><ServiceProgress service={machine} kind="media" job={running[0]} /></div> : video || images.length ? <div className="preview-wrap"><div className="preview-top"><span className="preview-badge"><span className="tiny-dot" />本地成片</span><span className="preview-corner">H3 / {(displayedJob?.model ?? model).endsWith('bf16') ? 'BF16' : 'INT8'}</span></div>
             {video ? <video key={video.url} controls preload="metadata" src={video.url} /> : <img alt="生成结果" src={images[0].url} />}
             <div className="preview-caption"><span>{displayedJob?.name}<small>{displayedJob?.account} · 已保存到本地</small></span><a className="preview-download" aria-label="下载当前成片" href={(video || images[0]).url} download><ArrowDownToLine size={17} /></a></div></div> : <div className="preview-empty" role="status">{displayedJob && activeStatuses.has(displayedJob.status) ? <><LoaderCircle size={28} className="spin" /><strong>{statusLabel[displayedJob.status]}</strong><span>{displayedJob.message}</span></> : <><Film size={32} strokeWidth={1.2} /><strong>{displayedJob ? statusLabel[displayedJob.status] : '等待创作'}</strong><span>{displayedJob ? displayedJob.message : '生成后在这里预览'}</span></>}</div>}
           <div className="stage-status"><span><span className={`tiny-dot ${machine?.phase === 'ready' ? '' : 'muted'}`} />{running.length ? running[0].message : '准备好下一次创作'}</span><button className="text-button" onClick={() => setPage('library')}>全部任务 <ArrowUpRight size={13} /></button></div>
@@ -250,12 +276,12 @@ export default function App({ accountName, signOut }: { accountName?: string; si
           {machine?.session && <button className="stop-button" disabled={!!busy || running.length > 0 || machine.phase === 'stopping'} title={running.length ? '请先取消未完成任务' : '释放这个工作台的云端机器'} onClick={() => action('stop', () => api(`/accounts/${account}/stop`, 'POST'))}><Power size={13} />{machine.phase === 'stopping' ? '正在关闭…' : '关闭并释放机器'}</button>}
           <div className="compute-footer"><button className="text-button" disabled={!profile} onClick={() => setModal('logs')}><Terminal size={12} />部署日志</button><button className="text-button" aria-haspopup="dialog" onClick={() => setModal('settings')}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
         </div></section>
-        {machine && <Performance account={account} machine={machine} />}
+        {machine && <Performance account={account} machine={machine} updateMachine={next => updateMachine(account, 'media', next)} />}
         </aside>
       </div></>}
 
       {page === 'library' && <Library jobs={allJobs} accounts={state.accounts.map(a => a.id)} reuse={reuse} create={() => setPage('studio')} refresh={refresh} request={api} notify={setNotice} />}
-      {page === 'services' && <Services state={state} account={account} request={api} refresh={refresh} notify={setNotice} openSettings={() => setModal('settings')} />}
+      {page === 'services' && <Services updateMachine={(id, next) => updateMachine(id, 'llm', next)} state={state} account={account} request={api} refresh={refresh} notify={setNotice} openSettings={() => setModal('settings')} />}
     </div>
 
     {modal === 'settings' && <SettingsDialog saved={state.settings} accounts={state.accounts} account={account} busy={!!busy} close={() => setModal(null)} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} save={async value => {

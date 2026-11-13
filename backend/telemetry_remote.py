@@ -7,6 +7,25 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+DEPLOYMENTS = {
+    '/deployment/media': Path('/content/colab-workbench/deploy-status.json'),
+    '/deployment/llm': Path('/content/colab-workbench-llm/status.json'),
+}
+
+
+def deployment_status(route):
+    path = DEPLOYMENTS.get(route)
+    if path is None:
+        return None
+    try:
+        if path.stat().st_size > 128 * 1024:
+            return None
+        state = json.loads(path.read_text())
+        return state if isinstance(state, dict) and state.get('phase') else None
+    except (OSError, ValueError):
+        return None
 
 
 def number(value):
@@ -86,14 +105,16 @@ def main():
                 cache.update(sample=sampler.sample(), error=None)
             except Exception as exc:
                 cache.update(sample=None, error=type(exc).__name__)
-            time.sleep(max(0.1, 2 - (time.monotonic() - start)))
+            time.sleep(max(0.1, 1 - (time.monotonic() - start)))
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path != "/metrics":
+            if self.path != '/metrics':
                 self.send_error(404)
                 return
-            data = json.dumps(cache, allow_nan=False).encode()
+            kind = 'llm' if Path(__file__).parent.name.endswith('-llm') else 'media'
+            payload = {**cache, 'deployment': deployment_status('/deployment/' + kind)}
+            data = json.dumps(payload, allow_nan=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")

@@ -483,7 +483,13 @@ class LLM:
                         return
                     except (aiohttp.ClientError, TimeoutError, RuntimeError, OSError):
                         pass
-                    if time.monotonic() - checked > 3:
+                    deployment = await self.telemetry.deployment(key, 'llm')
+                    if deployment is not None:
+                        if deployment.get('phase') == 'error':
+                            raise RuntimeError(deployment.get('message', '部署失败'))
+                        self.machine(key, message=deployment.get('message', '准备服务'), deployment=deployment)
+                        read_failures = 0
+                    elif time.monotonic() - checked > 3:
                         try:
                             output = await self.colab.execute(account, session, check)
                         except Exception as exc:
@@ -504,7 +510,7 @@ class LLM:
                                     raise RuntimeError(f'连续 {read_failures} 次无法读取部署状态，原机器仍保留；可重新连接：{detail}') from exc
                             self.machine(key, message='状态连接暂时中断，继续检查原实例端点')
                             checked = time.monotonic()
-                            await asyncio.sleep(3)
+                            await asyncio.sleep(1)
                             continue
                         read_failures = 0
                         self.log(key, output)
@@ -515,7 +521,7 @@ class LLM:
                                     raise RuntimeError(state.get("message", "部署失败"))
                                 self.machine(key, message=state.get("message", "准备模型服务"), deployment=state)
                         checked = time.monotonic()
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(1)
                 raise TimeoutError("服务部署超过 60 分钟，请查看日志或关闭机器")
             except Exception as exc:
                 detail = error_message(exc)

@@ -27,6 +27,8 @@ class FakeColab:
         self.native_busy = False
         self.telemetry_ports = {}
         self.metric_offset = 0
+        self.deployment_samples = {}
+        self.metric_reads = 0
 
     async def sessions(self, account):
         self.calls.append((account, "sessions"))
@@ -62,7 +64,8 @@ class FakeColab:
 
         @routes.get('/metrics')
         async def metrics(request):
-            return web.json_response({"sample": {
+            self.metric_reads += 1
+            return web.json_response({"deployment": self.deployment_samples.get(account), "sample": {
                 "sampled_at": time.time() + self.metric_offset,
                 "cpu": {"percent": 24, "cores": 24},
                 "memory": {"used": 40 * 2**30, "total": 160 * 2**30, "percent": 25},

@@ -1,3 +1,4 @@
+import json
 import sys
 import threading
 from types import SimpleNamespace
@@ -9,6 +10,28 @@ from backend.bundles import Bundles
 from backend.manager import Manager
 from backend.store import Store
 from tests.fake_colab import PROFILES, FakeColab
+
+
+def test_media_stages_keep_parallel_completion_and_start_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy_remote, 'ROOT', tmp_path)
+    deploy_remote.status('checking', '开始', reset=True)
+    original = json.loads((tmp_path / 'deploy-status.json').read_text())
+    barrier = threading.Barrier(2, timeout=2)
+    def write(name):
+        barrier.wait()
+        deploy_remote.stage(name, 'completed', bytes=100)
+    first = threading.Thread(target=write, args=('environment',))
+    second = threading.Thread(target=write, args=('download',))
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+    deploy_remote.stage('download', 'running', bytes=10)
+    deploy_remote.status('starting', '启动 ComfyUI')
+    result = json.loads((tmp_path / 'deploy-status.json').read_text())
+    assert result['started_at'] == original['started_at']
+    assert result['stages']['environment']['status'] == result['stages']['download']['status'] == 'completed'
+    assert result['stages']['download']['bytes'] == 100
 
 
 async def test_missing_video_catalog_fails_before_any_allocation(tmp_path):

@@ -31,6 +31,31 @@ class Telemetry:
         self.manager = manager
         self.cache, self.locks = {}, {}
 
+    async def deployment(self, account, kind):
+        """Use the same cached response as the performance panel, without a second remote read."""
+        if kind not in {'media', 'llm'}:
+            raise ValueError('Unknown deployment kind')
+        return (await self.read(account)).get('deployment')
+
+    def apply_deployment(self, account, state):
+        if not isinstance(state, dict) or not isinstance(state.get('phase'), str):
+            return None
+        machine = self.manager.machine(account)
+        if machine['phase'] not in {'deploying', 'checking'}:
+            return machine.get('deployment')
+        started = state.get('started_at')
+        if started is not None and (not isinstance(started, (int, float)) or not math.isfinite(started)
+                                    or started < machine.get('loading_started_at', 0) - 1):
+            return None
+        if state.get('model') and machine.get('model') and state['model'] != machine['model']:
+            return None
+        previous = machine.get('deployment') or {}
+        if isinstance(state.get('time'), (int, float)) and state['time'] < previous.get('time', 0):
+            return None
+        if state != previous:
+            self.manager.machine(account, deployment=state, message=state.get('message', machine['message']))
+        return state
+
     async def read(self, account):
         async with self.locks.setdefault(account, asyncio.Lock()):
             machine = self.manager.machine(account)
@@ -39,7 +64,8 @@ class Telemetry:
             if cached and cached["session"] != session:
                 cached = None
                 self.cache.pop(account, None)
-            blank = {"account": account, "session": session, "status": "offline", "sample": None, "history": []}
+            blank = {"account": account, "session": session, "status": "offline", "sample": None, "history": [],
+                     "deployment": None, "machine": machine}
             if not session or machine["phase"] == "stopped":
                 self.cache.pop(account, None)
                 return blank
@@ -47,13 +73,18 @@ class Telemetry:
                 return {**blank, "status": "disconnected"}
             if not port:
                 return {**blank, "status": "waiting"}
-            if cached and time.monotonic() - cached["fetched"] < 1.8:
-                return cached["payload"]
+            if cached and time.monotonic() - cached["fetched"] < .8:
+                return {**cached['payload'], 'machine': machine}
+            deployment = None
             try:
                 async with self.manager.http.get(f"http://127.0.0.1:{port}/metrics",
                                                  timeout=aiohttp.ClientTimeout(total=3)) as response:
                     response.raise_for_status()
                     body = await response.json()
+                latest = self.manager.machine(account)
+                if latest.get('session') != session or latest['phase'] in {'stopped', 'stopping', 'disconnected'}:
+                    return {**blank, 'session': latest.get('session'), 'status': 'disconnected'}
+                deployment = self.apply_deployment(account, body.get('deployment')) if isinstance(body, dict) else None
                 sample = body.get("sample") if isinstance(body, dict) else None
                 validate_sample(sample)
                 stamp = sample.get("sampled_at")
@@ -63,13 +94,14 @@ class Telemetry:
                 if not history or history[-1]["sampled_at"] != stamp:
                     history.append(sample)
                 payload = {**blank, "status": "live", "sample": sample,
-                           "history": [s for s in history[-60:] if stamp - s["sampled_at"] <= 120]}
+                           "history": [s for s in history[-120:] if stamp - s["sampled_at"] <= 120], "deployment": deployment}
             except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
-                payload = {**blank, "status": "unavailable"}
+                payload = {**blank, "status": "unavailable", "deployment": deployment}
             # Recheck after network IO; a stop/replacement must invalidate an in-flight response.
             latest = self.manager.machine(account)
             if latest.get("session") != session or latest["phase"] in {"stopped", "stopping", "disconnected"}:
                 self.cache.pop(account, None)
                 return {**blank, "session": latest.get("session"), "status": "offline" if not latest.get("session") else "disconnected"}
+            payload['machine'] = latest
             self.cache[account] = {"session": session, "fetched": time.monotonic(), "payload": payload}
             return payload

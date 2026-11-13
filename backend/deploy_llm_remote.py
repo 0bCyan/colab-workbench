@@ -45,7 +45,7 @@ def stage(name, value, **extra):
 
 
 def monitor_download(done):
-    while not done.wait(.5):
+    while not done.wait(.25):
         try:
             data = json.loads((ROOT / 'stream-restore-status.json').read_text())
             files = data.get('files', [])
@@ -118,6 +118,7 @@ def main():
             stage('environment', 'waiting', message='等待引擎脚本')
             stage('download', 'running', bytes=0, total_bytes=recipe.get('size_gib', 0) * 2**30,
                   files_done=0, files_total=7, elapsed_seconds=0, rate_bytes_s=0)
+            (ROOT / 'stream-restore-status.json').unlink(missing_ok=True)
             monitor.start()
 
             def download():

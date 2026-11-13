@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Activity, ArrowDown, ArrowUp, Cpu, Gauge, HardDrive, MemoryStick, Thermometer, Zap } from 'lucide-react'
 import type { Machine, MetricSample, Metrics } from './types'
 
@@ -7,7 +7,7 @@ const gib = (n: number | null | undefined) => value(n == null ? n : n / 2 ** 30,
 const bandwidth = (n: number | null | undefined) => n == null ? '—' : n >= 1024 ** 2 ? value(n / 1024 ** 2, ' MB/s', 1) : value(n / 1024, ' KB/s', 1)
 
 function Sparkline({ samples, color }: { samples: (number | null | undefined)[]; color: string }) {
-  const points = samples.map((n, i) => n == null || !Number.isFinite(n) ? null : `${i * 200 / 59},${27 - Math.max(0, Math.min(100, n)) * .24}`)
+  const points = samples.map((n, i) => n == null || !Number.isFinite(n) ? null : `${i * 200 / Math.max(59, samples.length - 1)},${27 - Math.max(0, Math.min(100, n)) * .24}`)
   const segments: string[][] = [[]]
   for (const point of points) { if (point === null) segments.push([]); else segments[segments.length - 1].push(point) }
   return <svg className="sparkline" viewBox="0 0 200 30" preserveAspectRatio="none" aria-hidden="true"><path d="M0 28H200" stroke="currentColor" opacity=".1" />{segments.filter(s => s.length).map((s, i) => <polyline key={i} points={s.join(' ')} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round" />)}{points.filter(Boolean).length === 1 && <circle cx="0" cy={points.find(Boolean)!.split(',')[1]} r="2" fill={color} />}</svg>
@@ -17,7 +17,9 @@ function Meter({ label, percent, detail, history, color, icon }: { label: string
   return <div className="metric-card" aria-label={`${label}占用率`}><div className="metric-heading"><span>{icon}{label}</span><strong>{value(percent)}</strong></div><div className="metric-bar"><span style={{ width: `${percent == null ? 0 : Math.max(0, Math.min(100, percent))}%`, background: color }} /></div><div className="metric-bottom"><small title={detail}>{detail || '—'}</small><Sparkline samples={history} color={color} /></div></div>
 }
 
-export default function Performance({ account, machine, metricsPath, metricsKey }: { account: string; machine: Machine; metricsPath?: string; metricsKey?: string }) {
+export default function Performance({ account, machine, metricsPath, metricsKey, updateMachine }: { account: string; machine: Machine; metricsPath?: string; metricsKey?: string; updateMachine?: (machine: Machine) => void }) {
+  const onMachine = useRef(updateMachine)
+  onMachine.current = updateMachine
   const [result, setResult] = useState<{ metrics: Metrics; received: number } | null>(null)
   const [clock, setClock] = useState(Date.now())
   useEffect(() => {
@@ -31,20 +33,23 @@ export default function Performance({ account, machine, metricsPath, metricsKey 
         const response = await fetch(metricsPath ?? `/api/accounts/${account}/metrics`, { signal: controller.signal })
         if (!response.ok) throw new Error('Metrics unavailable')
         const metrics: Metrics = await response.json()
-        if (active) setResult({ metrics, received: Date.now() })
+        if (active) {
+          setResult({ metrics, received: Date.now() })
+          if (metrics.machine && metrics.account === (metricsKey ?? account) && metrics.session === machine.session) onMachine.current?.(metrics.machine)
+        }
       } catch { if (active) setResult(null) }
-      if (active) timer = setTimeout(poll, 2000)
+      if (active) timer = setTimeout(poll, 1000)
     }
     poll()
     return () => { active = false; controller.abort(); clearTimeout(timer) }
-  }, [account, machine.session, machine.phase, metricsPath])
-  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 2000); return () => clearInterval(timer) }, [])
+  }, [account, machine.session, machine.phase, metricsPath, metricsKey])
+  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer) }, [])
   const metrics = result?.metrics
   const live = metrics?.account === (metricsKey ?? account) && metrics.session === machine.session && metrics.status === 'live' && clock - (result?.received ?? 0) < 8000 && machine.phase !== 'stopped'
   const s: MetricSample | null = live ? metrics.sample : null
   const history = live ? metrics.history : []
   const offline = !machine.session || machine.phase === 'stopped'
-  const status = offline ? 'GPU 未启动' : live ? '实时 · 2s' : metrics?.status === 'waiting' ? '等待采集' : '连接中断'
+  const status = offline ? 'GPU 未启动' : live ? '实时 · 1s' : metrics?.status === 'waiting' ? '等待采集' : '连接中断'
   return <section className={`performance-panel ${live ? 'live' : ''}`} aria-label="性能看板"><header><span><Activity size={14} />性能看板</span><span className="metric-status"><i />{status}</span></header>
     <div className="performance-meters">
       <Meter label="GPU" icon={<Cpu size={13} />} percent={s?.gpu?.percent} color="#88a65f" detail={s?.gpu?.name.replace('NVIDIA ', '').replace(' Blackwell Server Edition', '') || 'RTX PRO 6000'} history={history.map(h => h.gpu?.percent)} />

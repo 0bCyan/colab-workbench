@@ -93,7 +93,7 @@ class Manager:
                 raise ValueError('正在准备另一个创作模型，请等待完成')
             return machine
         if account not in self.start_tasks or self.start_tasks[account].done():
-            self.machine(account, model=model)
+            self.machine(account, model=model, deployment=None, loading_started_at=time.time())
             self.start_tasks[account] = asyncio.create_task(self.start(account, model))
         return self.machine(account)
 
@@ -197,20 +197,29 @@ class Manager:
                         return
                     except (aiohttp.ClientError, TimeoutError, RuntimeError):
                         pass
-                    if time.monotonic() - last_check > 12:
+                    deployment = await self.telemetry.deployment(account, 'media')
+                    if deployment is not None and deployment.get('model', model) != model:
+                        deployment = None
+                    if deployment is not None:
+                        if deployment.get('phase') == 'error':
+                            raise RuntimeError(deployment.get('message', '部署失败'))
+                        self.machine(account, message=deployment.get('message', '等待部署'), deployment=deployment)
+                        deployment_ready = deployment.get('phase') == 'ready'
+                    elif time.monotonic() - last_check > 12:
+                        # Older sidecars retain the slower CLI fallback; current VMs use the tunnel above.
                         output = await self.colab.execute(account, session, check)
                         for line in output.splitlines():
                             if line.startswith("WB_STATUS:"):
-                                status = json.loads(line.removeprefix("WB_STATUS:"))
-                                if status.get('model', model) != model:
+                                state = json.loads(line.removeprefix("WB_STATUS:"))
+                                if state.get('model', model) != model:
                                     continue
-                                if status.get("phase") == "error":
-                                    raise RuntimeError(status.get("message", "部署失败") + "\n" + output[-2500:])
-                                self.machine(account, message=status.get("message", "等待部署"), deployment=status)
-                                deployment_ready = status.get('phase') == 'ready'
+                                if state.get("phase") == "error":
+                                    raise RuntimeError(state.get("message", "部署失败") + "\n" + output[-2500:])
+                                self.machine(account, message=state.get("message", "等待部署"), deployment=state)
+                                deployment_ready = state.get('phase') == 'ready'
                         self.log(account, output)
                         last_check = time.monotonic()
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(1)
                 raise TimeoutError("部署超过 60 分钟，请查看日志或停止机器")
             except asyncio.CancelledError:
                 raise

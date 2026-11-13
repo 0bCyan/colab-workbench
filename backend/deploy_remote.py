@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.request
@@ -39,12 +40,51 @@ def selected_model():
     return model
 
 
-def status(phase, message, **extra):
-    data = {"phase": phase, "message": message, "time": time.time(), 'model': selected_model(), **extra}
-    temp = ROOT / "deploy-status.tmp"
-    temp.write_text(json.dumps(data))
-    temp.replace(ROOT / "deploy-status.json")
+STATUS_LOCK = threading.Lock()
+
+
+def write_progress(update, reset=False):
+    with STATUS_LOCK:
+        path = ROOT / 'deploy-status.json'
+        try:
+            data = json.loads(path.read_text()) if not reset else {}
+        except (OSError, ValueError):
+            data = {}
+        data.setdefault('started_at', time.time())
+        data.update(time=time.time(), model=selected_model())
+        update(data)
+        temp = ROOT / 'deploy-status.tmp'
+        temp.write_text(json.dumps(data))
+        temp.replace(path)
+    return data
+
+
+def status(phase, message, reset=False, **extra):
+    data = write_progress(lambda data: data.update(phase=phase, message=message, **extra), reset)
     print(json.dumps(data), flush=True)
+
+
+def stage(name, value, **extra):
+    def update(data):
+        current = data.setdefault('stages', {}).setdefault(name, {})
+        if current.get('status') in {'completed', 'error'} and value in {'running', 'waiting'}:
+            return
+        current.update(status=value, **extra)
+    write_progress(update)
+
+
+def monitor_download(done):
+    path = ROOT.parent / 'stream-restore-status.json'
+    while not done.wait(.25):
+        try:
+            summary = json.loads(path.read_text())
+            stage('download', 'completed' if summary.get('restored') else 'running',
+                  bytes=summary.get('bytes', 0), total_bytes=summary.get('total_bytes', 0),
+                  elapsed_seconds=summary.get('elapsed_seconds', 0), rate_bytes_s=summary.get('rate_bytes_s', 0),
+                  files_done=summary.get('files_done', 0), files_total=summary.get('files_total', 0),
+                  current=summary.get('current'))
+        except (OSError, ValueError):
+            pass
 
 
 def run(args):
@@ -88,20 +128,36 @@ def restore_cloud_weights():
         run(['mount', '-t', 'tmpfs', '-o', 'size=128G' if public else 'size=80G', 'workbench-weights', str(weights)])
     elif public:
         run(['mount', '-o', 'remount,size=128G', str(weights)])
+    stage('download', 'running', bytes=0, total_bytes=index['total_bytes'], files_done=0, files_total=len(index['files']))
     broker = ROOT / 'weight-download-grant.json'
     try:
         if public:
-            restore(None, ROOT, workers=64, public_index=index)
+            result = restore(None, ROOT, workers=64, public_index=index)
         else:
             broker.write_text(json.dumps({**cloud, 'bundle_id': key}))
             broker.chmod(0o600)
-            restore(broker, ROOT, workers=64)
+            result = restore(broker, ROOT, workers=64)
+        stage('download', 'completed', bytes=result['total_bytes'], total_bytes=result['total_bytes'],
+              files_done=len(index['files']), files_total=len(index['files']), current=None)
+    except BaseException:
+        stage('download', 'error')
+        raise
     finally:
         broker.unlink(missing_ok=True)
     return index['assets']
 
 
 def install_environment():
+    stage('environment', 'running', message='安装 ComfyUI 依赖')
+    try:
+        _install_environment()
+        stage('environment', 'completed', message='环境已就绪')
+    except BaseException:
+        stage('environment', 'error', message='环境安装失败')
+        raise
+
+
+def _install_environment():
     COMFY.mkdir(parents=True, exist_ok=True)
     if not (COMFY / '.git').exists():
         run(['git', '-C', str(COMFY), 'init'])
@@ -126,9 +182,19 @@ def main():
             print("Deployment is already active", flush=True)
             return
         try:
+            status('checking', '检查 GPU 与部署环境', reset=True)
+            (ROOT.parent / 'stream-restore-status.json').unlink(missing_ok=True)
             if healthy():
                 # Add the selected model to this VM without restarting ComfyUI or discarding other weights.
-                download_models()
+                stage('environment', 'completed', message='复用当前环境')
+                done = threading.Event()
+                monitor = threading.Thread(target=monitor_download, args=(done,), daemon=True)
+                monitor.start()
+                try:
+                    download_models()
+                finally:
+                    done.set()
+                    monitor.join(timeout=1)
                 status("ready", "ComfyUI 已就绪")
                 return
             status("checking", "检查 Blackwell GPU 与 CUDA")
@@ -139,7 +205,14 @@ def main():
                 raise RuntimeError("INT8 ConvRot 预设需要 CUDA 13 的 PyTorch")
             if (ROOT / 'bundle-config.json').exists() or selected_model() == 'minimax-image-bf16':
                 status('downloading', '权重下载到内存，同时安装 ComfyUI 环境')
-                prepare_in_parallel(restore_cloud_weights, install_environment)
+                done = threading.Event()
+                monitor = threading.Thread(target=monitor_download, args=(done,), daemon=True)
+                monitor.start()
+                try:
+                    prepare_in_parallel(restore_cloud_weights, install_environment)
+                finally:
+                    done.set()
+                    monitor.join(timeout=1)
             else:
                 status('installing', '安装已验证版本的 ComfyUI')
                 install_environment()

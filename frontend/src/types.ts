@@ -2,7 +2,7 @@ export type GraphNode = { class_type: string; inputs: Record<string, unknown>; _
 export type Graph = Record<string, GraphNode>
 export type Draft = { name: string; graph: Graph; positions: Record<string, { x: number; y: number }> }
 export type DeploymentProgress = { phase: string; message?: string; file_index?: number; started_at?: number; time?: number; stages?: { environment?: { status: string; message?: string }; download?: { status: string; bytes?: number; total_bytes?: number; elapsed_seconds?: number; rate_bytes_s?: number; files_done?: number; files_total?: number; current?: string } } }
-export type Machine = { phase: string; session?: string; model?: string; loaded_models?: string[]; message: string; port?: number; created_at?: number; last_activity?: number; deployment?: DeploymentProgress; stats?: unknown }
+export type Machine = { phase: string; session?: string; model?: string; loaded_models?: string[]; message: string; port?: number; created_at?: number; updated_at?: number; loading_started_at?: number; last_activity?: number; deployment?: DeploymentProgress; stats?: unknown }
 export type Account = { id: string; label: string; installed: boolean; credential_present: boolean; machine: Machine; usage?: { balance: number | null; rate: number | null; active: number | null }; sessions?: { name: string; hardware: string }[]; error?: string; checked_at?: number }
 export type Job = { model?: string; deleted_at?: number | null; id: string; name: string; account: string; status: string; message: string; created_at: number; started_at?: number; ended_at?: number; progress?: number; stop_after: boolean; outputs: { filename: string; url: string; bytes: number }[]; graph?: Graph }
 export type Settings = { identity: string; idle_minutes: number; stop_on_exit: boolean }
@@ -20,7 +20,7 @@ export type MetricSample = {
   gpu: { name: string; percent: number | null; memory_used: number | null; memory_total: number | null; memory_percent: number | null; temperature: number | null; power: number | null; power_limit: number | null } | null
   network: { rx_bytes_s: number | null; tx_bytes_s: number | null }
 }
-export type Metrics = { account: string; session: string | null; status: 'offline' | 'live' | 'unavailable' | 'waiting' | 'disconnected'; sample: MetricSample | null; history: MetricSample[] }
+export type Metrics = { account: string; session: string | null; status: 'offline' | 'live' | 'unavailable' | 'waiting' | 'disconnected'; sample: MetricSample | null; history: MetricSample[]; machine?: Machine }
 
 export const activeStatuses = new Set(['pending', 'preparing', 'submitting', 'queued', 'running', 'downloading', 'recovering'])
 export const phaseLabel: Record<string, string> = { stopped: '已关闭', checking: '检查会话', provisioning: '申请 GPU', deploying: '部署中', ready: '已就绪', disconnected: '等待重连', error: '需要处理', stopping: '关闭中' }

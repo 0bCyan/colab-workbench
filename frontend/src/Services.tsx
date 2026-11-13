@@ -3,11 +3,12 @@ import { Check, ChevronRight, Cloud, Copy, Cpu, KeyRound, LoaderCircle, Play, Pl
 import Dialog from './Dialog'
 import Performance from './Performance'
 import ServiceProgress from './ServiceProgress'
-import { type LLMConfig, type LLMService, type State, phaseLabel } from './types'
+import { type LLMConfig, type LLMService, type State, type Machine, phaseLabel } from './types'
 import './services.css'
 
 type Props = {
   state: State
+  updateMachine?: (key: string, machine: Machine) => void
   account: string
   request: <T = unknown>(path: string, method?: string, body?: unknown) => Promise<T>
   refresh: () => Promise<unknown>
@@ -20,7 +21,7 @@ const normalizeConfig = (config?: LLMConfig): LLMConfig => ({ ...defaults, ...co
 type ToolCall = { id?: string; name: string; arguments: string }
 const busyPhases = new Set(['checking', 'provisioning', 'deploying', 'stopping'])
 
-export default function Services({ state, account: defaultAccount, request, refresh, notify, openSettings }: Props) {
+export default function Services({ updateMachine, state, account: defaultAccount, request, refresh, notify, openSettings }: Props) {
   const services = state.llm?.services ?? []
   const presets = state.llm?.presets ?? []
   const [selected, setSelected] = useState(services[0]?.id ?? '')
@@ -208,7 +209,7 @@ export default function Services({ state, account: defaultAccount, request, refr
         <button className="primary full" disabled={!available || !presets.length || !configValid || !outputValid || !!pending || working || ready} onClick={() => act('start', async () => { if (!service) await createInstance(true); else { if (dirty || nameDirty || outputDirty) await save(); await request(`/llm/${selected}/start`, 'POST') } })}>{working ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{working ? service?.phase === 'stopping' ? '正在关闭…' : '正在准备…' : ready ? '服务已启动' : service?.session ? '重新连接 / 重试' : service ? '启动服务' : '创建并启动'}</button>
         {(service?.session || working) && <button className="stop-button" disabled={!!pending || !!service?.active_requests || testing || service?.phase === 'stopping'} onClick={() => act('stop', () => request(`/llm/${selected}/stop`, 'POST'))}><Power size={13} />关闭服务并释放机器</button>}
         <div className="compute-footer"><button className="text-button" disabled={!service} onClick={() => setLogs([])}><Terminal size={12} />服务日志</button><button className="text-button" onClick={openSettings}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
-      </div></section>{service ? <Performance account={account} machine={service} metricsPath={`/api/llm/${service.id}/metrics`} metricsKey={service.id} /> : <Performance account={account} machine={{ phase: 'stopped', message: '尚未创建实例' }} metricsPath="/api/llm/uncreated/metrics" /> }</aside>
+      </div></section>{service ? <Performance account={account} machine={service} updateMachine={next => updateMachine?.(service.id, next)} metricsPath={`/api/llm/${service.id}/metrics`} metricsKey={service.id} /> : <Performance account={account} machine={{ phase: 'stopped', message: '尚未创建实例' }} metricsPath="/api/llm/uncreated/metrics" /> }</aside>
     </div>
     {deleting && service && <Dialog title="删除服务实例" close={() => setDeleting(false)}><p>删除 {service.name || recipe?.name} · {service.id.slice(-4)} 的本地配置和日志？</p><footer><button className="secondary" onClick={() => setDeleting(false)}>取消</button><button className="primary" disabled={!!pending} onClick={() => act('delete', async () => { await request(`/llm/${selected}`, 'DELETE'); setSelected(''); setDeleting(false); notify('实例已删除') })}>删除实例</button></footer></Dialog>}
     {logs !== null && <Dialog title={`${service?.name || recipe?.name} · ${selected.slice(-4)}`} close={() => setLogs(null)} wide><div className="logs">{logs.length ? logs.map((l, i) => <div key={i}><time>{new Date(l.time * 1000).toLocaleTimeString()}</time><pre>{l.message}</pre></div>) : <div className="log-empty">启动服务后显示部署进度。</div>}</div></Dialog>}

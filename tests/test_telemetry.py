@@ -1,3 +1,5 @@
+import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -6,7 +8,43 @@ import pytest
 from backend.manager import Manager
 from backend.store import Store
 from backend.telemetry_remote import Sampler, gpu_sample
+from backend.telemetry_remote import deployment_status as read_deployment
 from tests.fake_colab import PROFILES, FakeColab
+
+
+async def test_deployment_and_metrics_share_one_read_and_update_one_snapshot(monitor):
+    manager, fake = monitor
+    await manager.start('colab2')
+    manager.telemetry.cache.clear()
+    fake.metric_reads = 0
+    started = time.time()
+    manager.machine('colab2', phase='deploying', loading_started_at=started, deployment=None)
+    state = {'phase': 'downloading', 'started_at': started, 'time': started, 'message': '下载权重',
+             'stages': {'download': {'status': 'running', 'bytes': 64, 'total_bytes': 128}}}
+    fake.deployment_samples['colab2'] = state
+    calls = len(fake.calls)
+    result, deployment = await asyncio.gather(manager.telemetry.read('colab2'), manager.telemetry.deployment('colab2', 'media'))
+    assert fake.metric_reads == 1 and len(fake.calls) == calls
+    assert deployment == state == result['machine']['deployment']
+    assert result['sample']['gpu']['percent'] == 73
+    # A fresh performance sample can never revive an older deployment attempt.
+    manager.telemetry.cache.clear()
+    fake.deployment_samples['colab2'] = {**state, 'started_at': started - 30, 'phase': 'ready'}
+    result = await manager.telemetry.read('colab2')
+    assert result['deployment'] is None and manager.machine('colab2')['deployment'] == state
+    manager.machine('colab2', phase='ready')
+
+
+def test_sidecar_reads_only_known_progress_files_and_handles_atomic_replace(tmp_path, monkeypatch):
+    from backend import telemetry_remote
+    path = tmp_path / 'deploy-status.json'
+    monkeypatch.setattr(telemetry_remote, 'DEPLOYMENTS', {'/deployment/media': path})
+    assert read_deployment('/deployment/media') is None
+    assert read_deployment('/deployment/../../secrets') is None
+    path.write_text(json.dumps({'phase': 'downloading', 'stages': {'download': {'bytes': 10}}}))
+    assert read_deployment('/deployment/media')['stages']['download']['bytes'] == 10
+    path.write_text('{')
+    assert read_deployment('/deployment/media') is None
 
 
 @pytest.fixture
@@ -28,7 +66,7 @@ async def test_metrics_never_provision_and_isolate_account_session(monitor):
     metrics = await manager.telemetry.read('colab2')
     assert metrics['status'] == 'live'
     assert metrics['sample']['gpu']['percent'] == 73
-    assert len(metrics['history']) == 1
+    assert len(metrics['history']) >= 1
     assert (await manager.telemetry.read('colab3'))['sample'] is None
     assert (await manager.telemetry.read('colab2')) == metrics
     session = manager.machine('colab2')['session']

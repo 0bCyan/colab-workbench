@@ -337,7 +337,11 @@ test('account lists support empty, single, two and many profiles with a stale se
       expect(Math.abs(card.width-list.width)).toBeLessThan(2)
     }
     if (count === 2) {
-      expect((await cards.nth(0).boundingBox())!.y).toBe((await cards.nth(1).boundingBox())!.y)
+      // Read both positions in one frame so the dialog entrance animation cannot skew the comparison.
+      await expect.poll(() => cards.evaluateAll(elements => {
+        const [first, second] = elements.map(element => element.getBoundingClientRect())
+        return Math.abs(first.y - second.y)
+      })).toBeLessThan(1)
     }
     if (count > 1) {
       if (count > 3) expect(await dialog.locator('.settings-account-list').evaluate(el=>el.scrollHeight>el.clientHeight)).toBeTruthy()

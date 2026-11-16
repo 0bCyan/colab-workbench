@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Background, Controls, Handle, Panel, Position, ReactFlow, applyEdgeChanges, applyNodeChanges,
   type Connection, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react'
 import { Check, Copy, Cpu, Film, Image as ImageIcon, Layers2, LoaderCircle, MoreHorizontal, Pause, Pencil,
-  Play, Plus, Power, RefreshCw, RotateCcw, Settings2, Square, Trash2, Type, X } from 'lucide-react'
+  Play, Plus, Power, RotateCcw, Settings2, Square, Trash2, Type, X } from 'lucide-react'
 import Dialog from '../Dialog'
 import type { Account } from '../types'
 import { STORAGE, cancelTask, deleteBoard, duplicateBoard, enqueue, initialDemo, loadDemo, makeNode, moveTask, names, patchBoard, patchNode,
@@ -273,12 +273,6 @@ export default function CanvasDemo({ accounts, visible, refreshAccounts, notify 
         </div></header>
         <label className="cd-default"><span>当前画布默认实例</span><select aria-label="画布默认实例" value={board.instanceId} onChange={e => changeDefault(e.target.value)}>
           {demo.instances.map(i => <option key={i.id} value={i.id}>{instanceLabel(i)}</option>)}</select></label>
-        <section className="cd-account-quotas" aria-label="账号可用额度"><header><span>账号额度</span>
-          <button className="icon-button" aria-label="刷新画布账号额度" title="刷新账号额度" disabled={quotaRefreshing || !accounts.some(a => a.installed && a.credential_present)}
-            onClick={() => void refreshQuota(true)}><RefreshCw size={12} className={quotaRefreshing ? 'spin' : ''} /></button></header>
-          <div>{accounts.length ? accounts.map(account => <div key={account.id} aria-label={`${account.id} 的可用额度`} title={account.error || (account.checked_at ? `更新于 ${new Date(account.checked_at * 1000).toLocaleTimeString('zh-CN')}` : '尚未查询')}>
-            <span>{account.id}</span><strong className={account.error ? 'quota-unavailable' : ''}>{quotaLabel(account.id)}</strong></div>) : <span className="cd-no-accounts">未配置账号</span>}</div>
-        </section>
         <div className="cd-instances" role="region" aria-label="算力实例列表" tabIndex={0}>{demo.instances.map(i => {
           const tasks = active.filter(t => t.instanceId === i.id), executing = tasks.find(t => t.status === 'running')
           const count = new Set([...demo.boards.filter(b => b.instanceId === i.id || b.nodes.some(n => n.data.instanceId === i.id)).map(b => b.id), ...tasks.map(t => t.boardId)]).size

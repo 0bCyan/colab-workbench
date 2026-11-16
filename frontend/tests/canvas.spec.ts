@@ -231,8 +231,7 @@ test('board management menu fits mobile and supports keyboard navigation', async
 })
 
 test('instance controls stay inside full-height cards and compute choices show real account quotas', async ({ page }) => {
-  let refreshed = false, updateQuota = false
-  const refreshes: string[] = []
+  let refreshed = false
   await page.route('**/api/state', async route => {
     const response = await route.fetch()
     const state = await response.json()
@@ -242,16 +241,15 @@ test('instance controls stay inside full-height cards and compute choices show r
     await route.fulfill({ response, json: state })
   })
   await page.route('**/api/accounts/*/refresh', async route => {
-    if (updateQuota) { refreshed = true; refreshes.push(new URL(route.request().url()).pathname) }
     await route.fulfill({ json: {} })
   })
   await page.goto('/?view=canvas')
-  await expect(page.getByLabel('colab1 的可用额度', { exact: true })).toContainText('0 CU')
-  await expect(page.getByLabel('colab2 的可用额度', { exact: true })).toContainText('123.45 CU')
-  await expect(page.getByLabel('colab3 的可用额度', { exact: true })).toContainText('额度读取失败')
+  await expect(page.getByLabel('账号可用额度', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('画布默认实例').locator('option[value="demo-g4-1"]')).toContainText('0 CU')
   await expect(page.getByLabel('画布默认实例').locator('option[value="demo-g4-2"]')).toContainText('123.45 CU')
   await page.getByLabel('新增演示实例', { exact: true }).click()
   await expect(page.getByLabel('演示实例账号').locator('option[value="colab2"]')).toContainText('123.45 CU')
+  await expect(page.getByLabel('演示实例账号').locator('option[value="colab3"]')).toContainText('额度读取失败')
   await page.getByLabel('演示实例名称').fill('第三台算力')
   await page.getByLabel('演示实例账号').selectOption('colab3')
   await page.getByRole('button', { name: '保存', exact: true }).click()
@@ -268,11 +266,8 @@ test('instance controls stay inside full-height cards and compute choices show r
     expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(size.height)
   }
   await page.setViewportSize({ width: 1280, height: 720 })
-  updateQuota = true
-  await page.getByRole('button', { name: '刷新画布账号额度', exact: true }).click()
-  await expect(page.getByLabel('colab2 的可用额度', { exact: true })).toContainText('678.9 CU')
-  await expect(page.getByLabel('colab3 的可用额度', { exact: true })).toContainText('12.34 CU')
-  expect(new Set(refreshes).size).toBe(3)
+  refreshed = true
+  await expect(page.getByLabel('画布默认实例').locator('option[value="demo-g4-2"]')).toContainText('678.9 CU')
   await page.locator('.cd-instances').evaluate(list => { list.scrollTop = 0 })
   await page.screenshot({ path: '../screenshots/review/canvas-compute-quotas.png' })
 })

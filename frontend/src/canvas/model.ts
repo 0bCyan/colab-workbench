@@ -9,7 +9,7 @@ export type CreativeNode = Node<CardData, 'creative'>
 export type Board = { id: string; name: string; instanceId: string; nodes: CreativeNode[]; edges: Edge[]; viewport?: Viewport }
 export type Instance = { id: string; name: string; account: string; phase: 'ready' | 'stopped' | 'starting'; paused: boolean; startedAt?: number; model?: Kind }
 export type Task = {
-  id: string; boardId: string; nodeId: string; instanceId: string; name: string; kind: Kind;
+  id: string; boardId: string; boardName?: string; nodeId: string; instanceId: string; name: string; kind: Kind;
   prompt: string; seed: number; resolution: string; dependencies: string[];
   status: 'queued' | 'running' | 'done' | 'cancelled'; createdAt: number; startedAt?: number; duration?: number; loading?: boolean
 }
@@ -57,6 +57,26 @@ export function loadDemo(accounts: string[]): Demo {
 }
 export function patchBoard(demo: Demo, id: string, changes: Partial<Board>): Demo {
   return { ...demo, boards: demo.boards.map(b => b.id === id ? { ...b, ...changes } : b) }
+}
+export function duplicateBoard(demo: Demo, id: string): Demo {
+  const source = demo.boards.find(b => b.id === id)
+  if (!source) return demo
+  const ids = new Map(source.nodes.map(node => [node.id, uid()]))
+  let name = `${source.name} 副本`, suffix = 2
+  while (demo.boards.some(b => b.name === name)) name = `${source.name} 副本 ${suffix++}`
+  const copy: Board = { ...structuredClone(source), id: uid(), name,
+    nodes: source.nodes.map(node => ({ ...structuredClone(node), id: ids.get(node.id)!, selected: false })),
+    edges: source.edges.map(edge => ({ ...structuredClone(edge), id: uid(), source: ids.get(edge.source)!, target: ids.get(edge.target)! })) }
+  return { ...demo, activeId: copy.id, boards: [...demo.boards, copy] }
+}
+export function deleteBoard(demo: Demo, id: string): Demo {
+  const index = demo.boards.findIndex(b => b.id === id)
+  if (index < 0 || demo.tasks.some(t => t.boardId === id && unfinished(t))) return demo
+  const removed = demo.boards[index]
+  const boards = demo.boards.filter(b => b.id !== id)
+  if (!boards.length) boards.push({ id: uid(), name: '未命名画布', instanceId: removed.instanceId, nodes: [], edges: [] })
+  return { ...demo, boards, activeId: demo.activeId === id ? boards[Math.min(index, boards.length - 1)].id : demo.activeId,
+    tasks: demo.tasks.map(t => t.boardId === id ? { ...t, boardName: removed.name } : t) }
 }
 export function patchNode(demo: Demo, boardId: string, nodeId: string, data: Partial<CardData>): Demo {
   const board = demo.boards.find(b => b.id === boardId)!

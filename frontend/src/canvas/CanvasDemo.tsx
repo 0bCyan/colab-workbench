@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Background, Controls, Handle, Panel, Position, ReactFlow, applyEdgeChanges, applyNodeChanges,
   type Connection, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react'
-import { Check, Cpu, Film, Image as ImageIcon, Layers2, LoaderCircle, MoreHorizontal, Pause, Pencil,
+import { Check, Copy, Cpu, Film, Image as ImageIcon, Layers2, LoaderCircle, MoreHorizontal, Pause, Pencil,
   Play, Plus, Power, RotateCcw, Settings2, Square, Trash2, Type, X } from 'lucide-react'
 import Dialog from '../Dialog'
-import { STORAGE, cancelTask, enqueue, initialDemo, loadDemo, makeNode, moveTask, names, patchBoard, patchNode,
+import { STORAGE, cancelTask, deleteBoard, duplicateBoard, enqueue, initialDemo, loadDemo, makeNode, moveTask, names, patchBoard, patchNode,
   progress, tick, uid, unfinished, type CardData, type CreativeNode, type Demo, type Instance, type Kind, type Task } from './model'
 import '@xyflow/react/dist/style.css'
 import './canvas.css'
@@ -62,6 +62,11 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
   const [nodeDialog, setNodeDialog] = useState<{ boardId: string; nodeId: string } | null>(null)
   const [instanceDialog, setInstanceDialog] = useState<Instance | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
+  const [boardName, setBoardName] = useState('')
+  const [deleting, setDeleting] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const menuTrigger = useRef<HTMLElement | null>(null)
   const [reset, setReset] = useState(false)
   const [queueFilter, setQueueFilter] = useState('all')
   const [history, setHistory] = useState(false)
@@ -71,6 +76,23 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
   const active = demo.tasks.filter(unfinished)
   const working = active.length > 0 || demo.instances.some(i => i.phase === 'starting')
   const selected = board.nodes.filter(n => n.selected).map(n => n.id)
+
+  useEffect(() => {
+    if (!menu) return
+    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    function outside(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as globalThis.Node) && !menuTrigger.current?.contains(event.target as globalThis.Node)) setMenu(null)
+    }
+    function keyboard(event: KeyboardEvent) {
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') { event.preventDefault(); menuTrigger.current?.focus() }
+        setMenu(null)
+      }
+    }
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', keyboard)
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', keyboard) }
+  }, [menu])
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE, JSON.stringify(demo)) }
@@ -130,18 +152,36 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
   function updateInstance(id: string, changes: Partial<Instance>) {
     setDemo(value => ({ ...value, instances: value.instances.map(i => i.id === id ? { ...i, ...changes } : i) }))
   }
+  function rename(id: string) {
+    setBoardName(demo.boards.find(b => b.id === id)?.name ?? '')
+    setRenaming(id); setMenu(null)
+  }
+  function openMenu(id: string, trigger: HTMLElement, point?: { x: number; y: number }) {
+    const bounds = trigger.getBoundingClientRect()
+    menuTrigger.current = trigger
+    setMenu({ id, x: Math.max(8, Math.min(point?.x ?? bounds.left, window.innerWidth - 208)),
+      y: Math.max(8, Math.min(point?.y ?? bounds.bottom + 6, window.innerHeight - 200)) })
+  }
   const displayed = demo.tasks.filter(t => (history ? !unfinished(t) : unfinished(t)) && (queueFilter === 'all' || t.instanceId === queueFilter))
   const sorted = history ? [...displayed].reverse() : [...displayed].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running'))
   const editingBoard = nodeDialog && demo.boards.find(b => b.id === nodeDialog.boardId)
   const editing = editingBoard && editingBoard.nodes.find(n => n.id === nodeDialog!.nodeId)
   const editingBusy = !!nodeDialog && active.some(t => t.boardId === nodeDialog.boardId && t.nodeId === nodeDialog.nodeId)
   const renameBoard = demo.boards.find(b => b.id === renaming)
+  const deletingBoard = demo.boards.find(b => b.id === deleting)
+  const deleteBlocked = active.some(t => t.boardId === deleting)
+  const menuBlocked = active.some(t => t.boardId === menu?.id)
 
   return <section className={`canvas-demo ${showCompute ? 'show-compute' : ''}`} aria-label="画布交互演示">
     <div className="cd-topbar">
-      <nav className="cd-board-tabs" role="tablist" aria-label="画布列表">{demo.boards.map(b => <button key={b.id} role="tab" aria-selected={b.id === board.id}
-        className={b.id === board.id ? 'active' : ''} onClick={() => setDemo(value => ({ ...value, activeId: b.id }))} onDoubleClick={() => setRenaming(b.id)}>
-        <Layers2 size={13} /><span>{b.name}</span>{active.some(t => t.boardId === b.id) && <i />}</button>)}
+      <nav className="cd-board-tabs" role="tablist" aria-label="画布列表">{demo.boards.map(b => <div key={b.id} className={`cd-board-tab ${b.id === board.id ? 'active' : ''}`}>
+        <button role="tab" aria-selected={b.id === board.id} onClick={() => { setMenu(null); setDemo(value => ({ ...value, activeId: b.id })) }} onDoubleClick={() => rename(b.id)}
+          onContextMenu={event => { event.preventDefault(); openMenu(b.id, event.currentTarget, { x: event.clientX, y: event.clientY }) }}
+          onKeyDown={event => { if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); openMenu(b.id, event.currentTarget) } }}>
+          <Layers2 size={13} /><span>{b.name}</span>{active.some(t => t.boardId === b.id) && <i />}</button>
+        <button className="cd-board-more" aria-label={`画布菜单 ${b.name}`} aria-haspopup="menu" aria-expanded={menu?.id === b.id}
+          onClick={event => menu?.id === b.id ? setMenu(null) : openMenu(b.id, event.currentTarget)}><MoreHorizontal size={14} /></button>
+      </div>)}
         <button className="icon-button" aria-label="新建画布" onClick={() => {
           const next = { id: uid(), name: `画布 ${demo.boards.length + 1}`, instanceId: board.instanceId, nodes: [], edges: [] }
           setDemo(value => ({ ...value, activeId: next.id, boards: [...value.boards, next] }))
@@ -192,7 +232,7 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
           <Controls showInteractive={false} />
           {!board.nodes.length && <Panel position="top-center" className="cd-empty-board"><Layers2 size={30} /><strong>从一个画面开始</strong><span>添加图片、视频，或用文本连接它们</span></Panel>}
         </ReactFlow>
-        <footer className="cd-board-footer"><button className="cd-rename" onClick={() => setRenaming(board.id)}>{board.name}<Pencil size={11} /></button>
+        <footer className="cd-board-footer"><button className="cd-rename" onClick={() => rename(board.id)}>{board.name}<Pencil size={11} /></button>
           <span>{board.nodes.length} 个节点</span><span className="cd-shortcut">空格拖动画布 · Shift 多选</span>
           <button className="cd-mobile-compute" onClick={() => setShowCompute(true)}><Cpu size={13} />算力与队列{active.length > 0 && <b>{active.length}</b>}</button></footer>
       </div>
@@ -236,8 +276,8 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
           const Icon = icons[task.kind]
           const waiting = task.status === 'queued' && task.dependencies.some(id => demo.tasks.find(t => t.id === id)?.status !== 'done')
           return <article className={`cd-task ${task.status}`} key={task.id} aria-label={`任务 ${task.name}`}>
-            <div className="cd-task-main"><span className="cd-task-icon"><Icon size={14} /></span><button onClick={() => setDemo(value => ({ ...value, activeId: task.boardId }))}>
-              <strong>{task.name}</strong><small>{currentBoard?.name ?? '已删除画布'} · {names[task.kind]}</small></button>
+            <div className="cd-task-main"><span className="cd-task-icon"><Icon size={14} /></span><button disabled={!currentBoard} onClick={() => setDemo(value => ({ ...value, activeId: task.boardId }))}>
+              <strong>{task.name}</strong><small>{currentBoard?.name ?? `${task.boardName ?? '画布'}（已删除）`} · {names[task.kind]}</small></button>
               <span className="cd-task-state">{task.status === 'running' && <LoaderCircle size={10} className="spin" />}{task.status === 'done' && <Check size={11} />}
                 {waiting ? '等待上游' : taskStage(task, now)}</span>
             </div>
@@ -281,8 +321,34 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
         updateInstance(instanceDialog.id, { name: instanceDialog.name.trim(), account: instanceDialog.account }); setInstanceDialog(null)
       }}>保存</button></footer>
     </Dialog>}
-    {renameBoard && <Dialog title="画布名称" close={() => setRenaming(null)}><label className="field"><span>名称</span><input aria-label="画布名称" maxLength={60} value={renameBoard.name}
-      onChange={e => setDemo(value => patchBoard(value, renameBoard.id, { name: e.target.value }))} /></label><footer><span className="subtle">自动保存</span><button className="primary" onClick={() => setRenaming(null)}>完成</button></footer></Dialog>}
+    {menu && <div className="cd-board-menu" role="menu" aria-label="画布操作" ref={menuRef} style={{ left: menu.x, top: menu.y }}
+      onKeyDown={event => {
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+        event.preventDefault()
+        const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+        const index = items.indexOf(document.activeElement as HTMLButtonElement)
+        items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
+      }}>
+      <button role="menuitem" onClick={() => rename(menu.id)}><Pencil size={14} />重命名</button>
+      <button role="menuitem" onClick={() => { setDemo(value => duplicateBoard(value, menu.id)); setMenu(null); notify('画布副本已创建') }}><Copy size={14} />复制画布</button>
+      <div className="cd-menu-divider" />
+      <button role="menuitem" className="danger" disabled={menuBlocked} title={menuBlocked ? '请先完成或取消此画布的任务' : '删除此画布'}
+        onClick={() => { setDeleting(menu.id); setMenu(null) }}><Trash2 size={14} />删除画布</button>
+      {menuBlocked && <p>请先完成或取消此画布的任务</p>}
+    </div>}
+    {renameBoard && <Dialog title="画布名称" close={() => setRenaming(null)}><form className="cd-board-form" onSubmit={event => {
+      event.preventDefault(); if (!boardName.trim()) return
+      setDemo(value => patchBoard(value, renameBoard.id, { name: boardName.trim() })); setRenaming(null)
+    }}><label className="field"><span>名称</span><input aria-label="画布名称" autoFocus maxLength={60} value={boardName}
+      onChange={e => setBoardName(e.target.value)} /></label><footer><button type="button" className="secondary" onClick={() => setRenaming(null)}>取消</button>
+        <button className="primary" type="submit" disabled={!boardName.trim()}>保存</button></footer></form></Dialog>}
+    {deletingBoard && <Dialog title="删除画布" close={() => setDeleting(null)} className="cd-delete-dialog">
+      <p>删除「{deletingBoard.name}」及其中的 {deletingBoard.nodes.length} 个节点？此操作无法撤销。</p>
+      <span className="cd-delete-note">{deleteBlocked ? '请先完成或取消此画布的任务。' : demo.boards.length === 1 ? '删除后会创建一张空白画布。算力实例与任务历史保留。' : '算力实例、其他画布与任务历史保留。'}</span>
+      <footer><button className="secondary" autoFocus onClick={() => setDeleting(null)}>取消</button><button className="primary cd-delete-confirm" disabled={deleteBlocked} onClick={() => {
+        setDemo(value => deleteBoard(value, deletingBoard.id)); setDeleting(null); notify('画布已删除')
+      }}>确认删除</button></footer>
+    </Dialog>}
     {reset && <Dialog title="重置画布演示" close={() => setReset(false)}><p>清空演示画布、任务和版本，恢复初始示例。</p><footer><button className="secondary" onClick={() => setReset(false)}>取消</button>
       <button className="primary" onClick={() => { setDemo(initialDemo(accounts)); setNodeDialog(null); setQueueFilter('all'); setHistory(false); setReset(false) }}>重置演示</button></footer></Dialog>}
   </section>

@@ -62,3 +62,20 @@
 @media(prefers-reduced-motion:reduce){.canvas-demo *{animation:none!important;transition:none!important}}
 @media(max-width:520px){.cd-top-actions{flex-wrap:wrap;gap:6px}.cd-top-actions>.cd-demo-badge{flex-basis:calc(100% - 32px)}.cd-top-actions>.secondary,.cd-top-actions>.primary{flex:1}.cd-top-actions>.icon-button{margin-left:auto}.cd-board-tabs{max-width:100%}.cd-board-footer>span{font-size:9px}.cd-settings .field-row{grid-template-columns:1fr}.cd-node{width:250px}}
 @media(max-width:520px){.cd-top-actions>.cd-demo-badge{font-size:10px}}
+/* Board management is available through both the visible menu and right-click. */
+.cd-board-tab{display:flex;align-items:center;flex:none;border:1px solid transparent;border-radius:7px;min-width:0}
+.cd-board-tab.active{background:#fff;border-color:#dce5d4;box-shadow:0 2px 4px #26322004}
+.cd-board-tab:hover{background:#edf1e6}.cd-board-tab.active:hover{background:#fff}
+.cd-board-tab>button[role=tab]{display:flex;align-items:center;gap:7px;min-width:0;padding:9px 4px 9px 11px;font-size:12px;color:#7b8876;white-space:nowrap}
+.cd-board-tab.active>button{color:#49623e}.cd-board-tab>button[role=tab]>span{max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.cd-board-more{display:grid;place-items:center;width:27px;height:29px;margin-right:4px;border-radius:5px;color:#98a58a;flex:none}
+.cd-board-more:hover,.cd-board-more[aria-expanded=true]{background:#e8efdc;color:#536f3e}
+.cd-board-menu{position:fixed;z-index:40;width:200px;padding:5px;background:#fcfdf8;border:1px solid #dce5cf;border-radius:9px;box-shadow:0 8px 28px #354b211c}
+.cd-board-menu>button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:10px;border-radius:5px;font-size:12px;color:#6e805e}
+.cd-board-menu>button:hover,.cd-board-menu>button:focus-visible{background:#edf3e3;outline:none}.cd-board-menu>button.danger{color:#a46457}
+.cd-board-menu>button.danger:hover:not(:disabled){background:#f7ede6}.cd-board-menu>button:disabled{background:none;cursor:not-allowed}
+.cd-menu-divider{height:1px;background:#e5ebdc;margin:4px 5px}.cd-board-menu>p{font-size:10px;color:#9aa58e;padding:3px 9px 8px;line-height:1.6}
+.cd-board-form>footer{display:flex;justify-content:space-between;align-items:center;gap:10px;padding-top:6px}
+.cd-delete-dialog>p{font-size:12px;color:#6f7e63;line-height:1.8;overflow-wrap:anywhere}
+.cd-delete-note{font-size:11px;color:#96a185;line-height:1.8}.cd-delete-confirm{background:#f1dfd4;border-color:#e8d0c1;color:#915b49}.cd-delete-confirm:hover{background:#ecd3c4}
+@media(max-width:760px){.cd-board-tab>button[role=tab]{font-size:11px;padding:7px 3px 7px 9px}.cd-board-tab>button[role=tab]>span{max-width:105px}.cd-board-more{width:26px;height:28px;margin-right:2px}}

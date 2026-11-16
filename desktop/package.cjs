@@ -5,7 +5,7 @@ const fs = require('node:fs')
 
 packager({
   dir: __dirname, name: 'Fieldwork', platform: 'darwin', arch: 'arm64',
-  appBundleId: 'cn.moebit.fieldwork.local', appVersion: '0.1.0',
+  appBundleId: 'cn.moebit.fieldwork.local', appVersion: require('./package.json').version,
   out: path.join(__dirname, 'dist', 'app'), overwrite: true, asar: true,
   extraResource: ['python', 'site', 'workbench'].map(name => path.join(__dirname, 'dist', 'resources', name)),
   ignore: (file) => !!file && !/^\/(main\.cjs|offline\.html|package\.json)$/.test(file),

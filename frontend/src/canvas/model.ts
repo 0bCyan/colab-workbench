@@ -31,24 +31,13 @@ export function initialDemo(accounts: string[]): Demo {
     { id: 'demo-g4-1', name: 'G4 · 01', account: accounts[0] ?? 'colab1', phase: 'ready', paused: false },
     { id: 'demo-g4-2', name: 'G4 · 02', account: accounts[1] ?? accounts[0] ?? 'colab1', phase: 'stopped', paused: false },
   ]
-  const boards: Board[] = [
-    { id: 'demo-images', name: '图片探索', instanceId: instances[0].id, edges: [], nodes: [
-      makeNode('image', 0, '晨雾中的山野，柔和的日光，安静的绿色。', '晨雾'),
-      makeNode('image', 1, '湖畔远山，水面倒影，淡雅的自然色彩。', '远山'),
-      makeNode('image', 2, '树影与微风，午后光线穿过层叠的叶片。', '树影'),
-    ] },
-    { id: 'demo-video', name: '视频分镜', instanceId: instances[0].id, edges: [], nodes: [
-      makeNode('video', 0, '镜头缓缓掠过森林，薄雾在晨光中流动。', '森林漫游'),
-      makeNode('video', 1, '固定镜头，湖面涟漪轻轻扩散，远处云层移动。', '湖面涟漪'),
-    ] },
-  ]
-  return { version: 1, activeId: boards[0].id, instances, boards, tasks: [] }
+  return { version: 1, activeId: '', instances, boards: [], tasks: [] }
 }
 export function loadDemo(accounts: string[]): Demo {
   try {
     const value = JSON.parse(localStorage.getItem(STORAGE) ?? 'null') as Demo | null
-    if (value?.version === 1 && Array.isArray(value.boards) && value.boards.length && Array.isArray(value.tasks)
-      && Array.isArray(value.instances) && value.instances.length && value.boards.some(b => b.id === value.activeId)
+    if (value?.version === 1 && Array.isArray(value.boards) && Array.isArray(value.tasks)
+      && Array.isArray(value.instances) && value.instances.length && (value.boards.length ? value.boards.some(b => b.id === value.activeId) : value.activeId === '')
       && value.boards.every(b => Array.isArray(b.nodes) && Array.isArray(b.edges)
         && value.instances.some(i => i.id === b.instanceId)
         && b.nodes.every(n => n.data && ['text', 'image', 'video'].includes(n.data.kind) && Array.isArray(n.data.versions)))) return value
@@ -74,8 +63,7 @@ export function deleteBoard(demo: Demo, id: string): Demo {
   if (index < 0 || demo.tasks.some(t => t.boardId === id && unfinished(t))) return demo
   const removed = demo.boards[index]
   const boards = demo.boards.filter(b => b.id !== id)
-  if (!boards.length) boards.push({ id: uid(), name: '未命名画布', instanceId: removed.instanceId, nodes: [], edges: [] })
-  return { ...demo, boards, activeId: demo.activeId === id ? boards[Math.min(index, boards.length - 1)].id : demo.activeId,
+  return { ...demo, boards, activeId: demo.activeId === id ? (boards[Math.min(index, boards.length - 1)]?.id ?? '') : demo.activeId,
     tasks: demo.tasks.map(t => t.boardId === id ? { ...t, boardName: removed.name } : t) }
 }
 export function patchNode(demo: Demo, boardId: string, nodeId: string, data: Partial<CardData>): Demo {

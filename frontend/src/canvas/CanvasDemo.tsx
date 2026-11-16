@@ -77,7 +77,7 @@ export default function CanvasDemo({ accounts, visible, refreshAccounts, notify 
   const [queueFilter, setQueueFilter] = useState('all')
   const [history, setHistory] = useState(false)
   const [showCompute, setShowCompute] = useState(false)
-  const board = demo.boards.find(b => b.id === demo.activeId)!
+  const board = demo.boards.find(b => b.id === demo.activeId) ?? { id: '', name: '', instanceId: demo.instances[0].id, nodes: [], edges: [] }
   const instance = demo.instances.find(i => i.id === board.instanceId)!
   const active = demo.tasks.filter(unfinished)
   const working = active.length > 0 || demo.instances.some(i => i.phase === 'starting')
@@ -147,6 +147,10 @@ export default function CanvasDemo({ accounts, visible, refreshAccounts, notify 
       cancel: () => task && setDemo(value => cancelTask(value, task.id)) } } }
   }), [board, demo.tasks, demo.instances, now, run])
 
+  function newBoard() {
+    const next = { id: uid(), name: `画布 ${demo.boards.length + 1}`, instanceId: board.instanceId, nodes: [], edges: [] }
+    setDemo(value => ({ ...value, activeId: next.id, boards: [...value.boards, next] }))
+  }
   function addNode(kind: Kind) {
     const node = makeNode(kind, board.nodes.length)
     const bounds = surface.current?.getBoundingClientRect()
@@ -198,6 +202,11 @@ export default function CanvasDemo({ accounts, visible, refreshAccounts, notify 
   const deleteBlocked = active.some(t => t.boardId === deleting)
   const menuBlocked = active.some(t => t.boardId === menu?.id)
 
+  if (!demo.boards.length) return <section className="canvas-demo cd-empty-start" aria-label="画布列表为空">
+    <Layers2 size={38} strokeWidth={1.1} /><h2>还没有画布</h2>
+    <button className="primary" onClick={newBoard}><Plus size={15} />新建画布</button>
+  </section>
+
   return <section className={`canvas-demo ${showCompute ? 'show-compute' : ''}`} aria-label="画布交互演示">
     <div className="cd-topbar">
       <nav className="cd-board-tabs" role="tablist" aria-label="画布列表">{demo.boards.map(b => <div key={b.id} className={`cd-board-tab ${b.id === board.id ? 'active' : ''}`}>
@@ -208,11 +217,8 @@ export default function CanvasDemo({ accounts, visible, refreshAccounts, notify 
         <button className="cd-board-more" aria-label={`画布菜单 ${b.name}`} aria-haspopup="menu" aria-expanded={menu?.id === b.id}
           onClick={event => menu?.id === b.id ? setMenu(null) : openMenu(b.id, event.currentTarget)}><MoreHorizontal size={14} /></button>
       </div>)}
-        <button className="icon-button" aria-label="新建画布" onClick={() => {
-          const next = { id: uid(), name: `画布 ${demo.boards.length + 1}`, instanceId: board.instanceId, nodes: [], edges: [] }
-          setDemo(value => ({ ...value, activeId: next.id, boards: [...value.boards, next] }))
-        }}><Plus size={16} /></button></nav>
-      <div className="cd-top-actions"><span className="cd-demo-badge">交互演示 · 不使用真实 GPU</span>
+        <button className="icon-button" aria-label="新建画布" onClick={newBoard}><Plus size={16} /></button></nav>
+      <div className="cd-top-actions"><span className="cd-demo-badge" title="模拟运行，尚未连接真实 GPU">演示</span>
         <button className="icon-button" aria-label="重置演示" title="重置演示" onClick={() => setReset(true)}><RotateCcw size={15} /></button>
         <button className="secondary" disabled={!selected.some(id => board.nodes.find(n => n.id === id)?.data.kind !== 'text')}
           onClick={() => run(board.id, selected)}><Play size={13} />运行所选{selected.length ? ` ${selected.length}` : ''}</button>
@@ -370,12 +376,12 @@ export default function CanvasDemo({ accounts, visible, refreshAccounts, notify 
         <button className="primary" type="submit" disabled={!boardName.trim()}>保存</button></footer></form></Dialog>}
     {deletingBoard && <Dialog title="删除画布" close={() => setDeleting(null)} className="cd-delete-dialog">
       <p>删除「{deletingBoard.name}」及其中的 {deletingBoard.nodes.length} 个节点？此操作无法撤销。</p>
-      <span className="cd-delete-note">{deleteBlocked ? '请先完成或取消此画布的任务。' : demo.boards.length === 1 ? '删除后会创建一张空白画布。算力实例与任务历史保留。' : '算力实例、其他画布与任务历史保留。'}</span>
+      <span className="cd-delete-note">{deleteBlocked ? '请先完成或取消此画布的任务。' : demo.boards.length === 1 ? '删除后回到空画布列表。算力实例与任务历史保留。' : '算力实例、其他画布与任务历史保留。'}</span>
       <footer><button className="secondary" autoFocus onClick={() => setDeleting(null)}>取消</button><button className="primary cd-delete-confirm" disabled={deleteBlocked} onClick={() => {
         setDemo(value => deleteBoard(value, deletingBoard.id)); setDeleting(null); notify('画布已删除')
       }}>确认删除</button></footer>
     </Dialog>}
-    {reset && <Dialog title="重置画布演示" close={() => setReset(false)}><p>清空演示画布、任务和版本，恢复初始示例。</p><footer><button className="secondary" onClick={() => setReset(false)}>取消</button>
+    {reset && <Dialog title="重置画布演示" close={() => setReset(false)}><p>清空演示画布、任务和版本，返回空画布列表。</p><footer><button className="secondary" onClick={() => setReset(false)}>取消</button>
       <button className="primary" onClick={() => { setDemo(initialDemo(accountIds)); setNodeDialog(null); setQueueFilter('all'); setHistory(false); setReset(false) }}>重置演示</button></footer></Dialog>}
   </section>
 }

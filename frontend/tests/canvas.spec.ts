@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { exampleCanvas } from './canvas-fixture'
 
 const demoState = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem('fieldwork-canvas-demo-v1')!))
 async function openDemo(page: Page) {
@@ -8,6 +9,13 @@ async function openDemo(page: Page) {
   await page.clock.install({ time: new Date('2026-11-13T10:00:00Z') })
   await page.clock.pauseAt(new Date('2026-11-13T10:00:10Z'))
 }
+
+test.describe('existing canvas interactions', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(value => {
+      if (!localStorage.getItem('fieldwork-canvas-demo-v1')) localStorage.setItem('fieldwork-canvas-demo-v1', JSON.stringify(value))
+    }, exampleCanvas())
+  })
 
 test('canvases share queues; defaults affect new work, queued work can move, and instances run in parallel', async ({ page }) => {
   const errors: string[] = [], gpuCalls: string[] = []
@@ -194,10 +202,12 @@ test('unfinished work blocks board deletion; history stays safe after deleting t
   for (const name of ['视频分镜', '图片探索']) {
     await page.getByRole('button', { name: `画布菜单 ${name}`, exact: true }).click()
     await page.getByRole('menuitem', { name: '删除画布', exact: true }).click()
-    if (name === '图片探索') await expect(page.getByRole('dialog', { name: '删除画布', exact: true })).toContainText('创建一张空白画布')
+    if (name === '图片探索') await expect(page.getByRole('dialog', { name: '删除画布', exact: true })).toContainText('空画布列表')
     await page.getByRole('button', { name: '确认删除', exact: true }).click()
   }
-  await expect(page.getByRole('tab', { name: '未命名画布', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('heading', { name: '还没有画布', exact: true })).toBeVisible()
+  expect((await demoState(page)).boards).toHaveLength(0)
+  await page.getByRole('button', { name: '新建画布', exact: true }).click()
   await expect(page.locator('.cd-node')).toHaveCount(0)
   await page.getByRole('button', { name: '历史记录', exact: true }).click()
   const task = page.getByLabel('任务 晨雾', { exact: true })
@@ -270,4 +280,21 @@ test('instance controls stay inside full-height cards and compute choices show r
   await expect(page.getByLabel('画布默认实例').locator('option[value="demo-g4-2"]')).toContainText('678.9 CU')
   await page.locator('.cd-instances').evaluate(list => { list.scrollTop = 0 })
   await page.screenshot({ path: '../screenshots/review/canvas-compute-quotas.png' })
+})
+
+})
+
+test('new installations start without sample canvases and preserve an empty list on refresh', async ({ page }) => {
+  await page.goto('/?view=canvas')
+  await expect(page.getByRole('heading', { name: '还没有画布', exact: true })).toBeVisible()
+  await expect(page.getByRole('tab')).toHaveCount(0)
+  await expect(page.getByText('交互演示 · 不使用真实 GPU', { exact: true })).toHaveCount(0)
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '还没有画布', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建画布', exact: true }).click()
+  await expect(page.getByRole('tab', { name: '画布 1', exact: true })).toBeVisible()
+  await expect(page.locator('.cd-node')).toHaveCount(0)
+  await page.getByRole('button', { name: '添加图片节点', exact: true }).click()
+  await expect(page.locator('.cd-node')).toHaveCount(1)
+  await page.screenshot({ path: '../screenshots/review/canvas-new-empty-default.png' })
 })

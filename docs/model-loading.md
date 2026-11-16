@@ -184,10 +184,10 @@ CPU 8／12／16／24／48 线程下，当前 LLM 短输入 decode 约 286–289 
 | LLM 前缀与会话缓存 | 属于推理缓存，和权重下载缓存无关 |
 | 本地服务断线 | 云端模型不一定停止；先核对原实例和端点 |
 | CLI 状态读取暂时超时 | LLM 对原实例进行有限重试，避免一次超时误报终止 |
-| 本地工作台重启 | 不自动恢复部署或申请 GPU；保留仍有归属的记录，等待重新连接 |
+| 本地工作台重启 | LLM 自动尝试重连已有会话，创作等待手动连接；不自动恢复部署或申请 GPU |
 | 关闭／释放 Colab VM | tmpfs、依赖、运行日志及推理缓存失去，下次重新恢复 |
 
-本地退出是否释放机器由 `stop_on_exit` 决定，空闲释放由 `idle_minutes` 决定。更新本地代码不能假设只会刷新页面；需要留意退出策略、活动请求及实例归属。仅停止已知属于本工作台的实例，不按账号批量接管外部会话。
+创作实例退出是否释放机器由 `stop_on_exit` 决定，空闲释放由 `idle_minutes` 决定。LLM 独立采用持续运行策略，不因空闲或本地退出释放；LLM 每 60 秒以所属账号的授权请求 Colab TFE `keep-alive` 路径；模型健康检查独立以 15 秒间隔运行，连续 3 次失败后每 60 秒只重连原会话，不自动新建或重新部署。会话活动请求在加载和推理中持续执行，图片／视频不调用。保活需要本地后台运行，退出后停止发送，但不主动释放原实例。厂商强制时限、配额和回收仍适用。更新本地代码不能假设只会刷新页面；需要留意退出策略、活动请求及实例归属。仅停止已知属于本工作台的实例，不按账号批量接管外部会话。
 
 ## 9. 复刻到另一台机器所需的内容
 
@@ -219,7 +219,8 @@ uv run python scripts/import_bundle.py /path/to/h3-video-g4-v1.json
 | [backend/deploy_remote.py](../backend/deploy_remote.py) | 媒体权重、ComfyUI 安装与启动、BF16 公开下载 |
 | [backend/manager.py](../backend/manager.py) | 创作任务、VM 复用、模型切换及归档 |
 | [backend/llm.py](../backend/llm.py) | LLM 实例、原会话重连、端点与请求保护 |
-| [backend/colab.py](../backend/colab.py) | CLI 管理及 SSH 正反向转发 |
+| [backend/colab.py](../backend/colab.py) | CLI 管理、LLM 会话保活适配及 SSH 正反向转发 |
+| [backend/colab_keepalive.py](../backend/colab_keepalive.py) | 复用指定账号启动器的本地授权向 Colab TFE 发送会话活动请求，不执行推理或创建机器 |
 | [templates/h3-image-bf16-weights.json](../templates/h3-image-bf16-weights.json) | BF16 公开文件、固定 revision 和摘要 |
 | [VALIDATION.md](../VALIDATION.md) | 各阶段验证记录 |
 

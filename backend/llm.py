@@ -13,6 +13,7 @@ import aiohttp
 from .colab import clean
 from .config import ROOT
 from .llm_presets import (
+    LIFECYCLE,
     LLM_ROOT,
     default_config,
     preset,
@@ -50,6 +51,10 @@ class LLM:
         self.http = None
         self.closing = False
         self.maintenance = None
+        self.heartbeat_failures = {}
+        self.reconnect_attempts = {}
+        self.assignment_ping_task = None
+        self.assignment_ping_attempts = {}
         if not store.get("meta", "llm_api_key"):
             store.put("meta", "llm_api_key", {"value": secrets.token_urlsafe(32)})
         self.migrate()
@@ -114,8 +119,9 @@ class LLM:
         self.http = aiohttp.ClientSession(json_serialize=lambda value: json.dumps(value, ensure_ascii=False))
         for item in self.all():
             if item.get("session"):
-                self.machine(item["id"], phase="disconnected", port=None, telemetry_port=None, message="服务已重启，请重新连接")
+                self.machine(item["id"], phase="disconnected", port=None, telemetry_port=None, message="保留原机器，等待恢复服务连接")
         self.maintenance = asyncio.create_task(self.maintain())
+        self.assignment_ping_task = asyncio.create_task(self.maintain_assignments())
 
     def machine(self, key, **changes):
         if key not in self.locks:
@@ -138,7 +144,7 @@ class LLM:
     def public(self, key):
         item = self.machine(key)
         return {k: v for k, v in {**item, "endpoint_path": f"/llm/{key}/v1", "model_name": self.model_name(key),
-                                  "active_requests": self.active[key]}.items()
+                                  "active_requests": self.active[key], "lifecycle": dict(LIFECYCLE)}.items()
                 if k not in {"port", "telemetry_port", "legacy_session", "legacy_model"}}
 
     def key(self):
@@ -358,6 +364,9 @@ class LLM:
         self.telemetry.cache.pop(key, None)
         self.locks.pop(key)
         self.active.pop(key)
+        self.heartbeat_failures.pop(key, None)
+        self.reconnect_attempts.pop(key, None)
+        self.assignment_ping_attempts.pop(key, None)
         self.tasks.pop(key, None)
         self.stops.pop(key, None)
         return {"deleted": key}
@@ -377,6 +386,8 @@ class LLM:
         if self.bundles:
             self.bundles.require([preset(item['config']['preset_id'])['bundle_id']])
         if key not in self.tasks or self.tasks[key].done():
+            self.heartbeat_failures.pop(key, None)
+            self.reconnect_attempts.pop(key, None)
             self.machine(key, phase="checking", message="核对此实例的云端会话",
                          deployment=item.get('deployment') if item.get('session') else None,
                          loading_started_at=item.get('loading_started_at', time.time()) if item.get('session') else time.time())
@@ -385,7 +396,7 @@ class LLM:
 
     def bootstrap(self, key, cloud=None):
         recipe = preset(self.machine(key)["config"]["preset_id"])
-        config = {**self.machine(key)["config"], "recipe": recipe, 'cloud': cloud}
+        config = {**self.machine(key)["config"], "recipe": recipe, 'cloud': cloud, 'lifecycle': dict(LIFECYCLE)}
         files = {"deploy.py": (ROOT / "backend/deploy_llm_remote.py").read_bytes(),
                  "telemetry.py": (ROOT / "backend/telemetry_remote.py").read_bytes(),
                  "config.json": json.dumps(config).encode(),
@@ -436,6 +447,7 @@ class LLM:
                     self.log(key, "申请独立 G4 服务机器")
                     try:
                         await self.colab.create(account, session)
+                        self.assignment_ping_attempts.pop(key, None)
                     except Exception as exc:
                         # A CLI failure can be ambiguous. Clear ownership only after a successful absence check.
                         try:
@@ -566,7 +578,10 @@ class LLM:
                 if self.bundles:
                     self.bundles.revoke(key)
                 self.machine(key, phase="stopped", session=None, port=None, telemetry_port=None, deployment=None,
-                             legacy_session=None, legacy_model=None, message="服务已关闭，机器已释放")
+                             legacy_session=None, legacy_model=None, heartbeat=None, assignment_keepalive=None, message="服务已关闭，机器已释放")
+                self.heartbeat_failures.pop(key, None)
+                self.reconnect_attempts.pop(key, None)
+                self.assignment_ping_attempts.pop(key, None)
                 self.log(key, "此实例的机器已释放")
                 self.migrate_catalog()
             except Exception as exc:
@@ -575,30 +590,118 @@ class LLM:
             finally:
                 self.stopping.discard(key)
 
+    async def ping_assignment(self, key, session):
+        item = self.machine(key)
+        if self.closing or key in self.stopping or item.get('session') != session or not self.owned(key, session):
+            return
+        try:
+            result = await self.colab.keepalive(item['account'], session)
+            if self.closing or key in self.stopping or self.machine(key).get('session') != session:
+                return
+            self.machine(key, assignment_keepalive={'last_attempt_at': time.time(), 'status': result['status'],
+                                                  'http_status': result.get('http_status'), 'error': None})
+        except Exception as exc:
+            if not self.closing and key not in self.stopping and self.machine(key).get('session') == session:
+                previous = self.machine(key).get('assignment_keepalive') or {}
+                self.machine(key, assignment_keepalive={**previous, 'last_attempt_at': time.time(), 'status': 'error', 'error': error_message(exc)})
+                if previous.get('status') != 'error':
+                    self.log(key, 'Colab 会话活动保活暂时失败，原实例保留，稍后重试：' + error_message(exc))
+
+    async def assignment_sweep(self):
+        if self.closing:
+            return
+        tasks = []
+        for item in self.all():
+            key, session = item['id'], item.get('session')
+            if not session or key in self.stopping or item['phase'] == 'stopped' or not self.owned(key, session):
+                continue
+            previous = self.assignment_ping_attempts.get(key)
+            if previous is None or previous[0] != session or time.monotonic() - previous[1] >= LIFECYCLE['assignment_ping_seconds']:
+                self.assignment_ping_attempts[key] = (session, time.monotonic())
+                tasks.append(self.ping_assignment(key, session))
+        # A slow auth/HTTP call for one account must not delay sibling pings.
+        await asyncio.gather(*tasks)
+
+    async def maintain_assignments(self):
+        while True:
+            await self.assignment_sweep()
+            await asyncio.sleep(5)
+
     async def idle_sweep(self):
-        minutes = self.store.get("settings", "main")["idle_minutes"]
+        """LLM is persistent: probe its service without idle release or inference requests."""
+        if self.closing:
+            return
         for item in self.all():
             key = item["id"]
-            if key not in self.locks:
+            if key not in self.locks or key in self.stopping or not item.get('session') or not self.owned(key, item['session']):
                 continue
-            if self.active[key] or item["phase"] not in {"ready", "error", "disconnected"} or not item.get("session"):
+            if self.active[key] or item.get('retired') or item["phase"] not in {"ready", "disconnected"}:
                 continue
-            if minutes and time.time() - item.get("last_activity", item.get("created_at", time.time())) > minutes * 60:
-                self.request_stop(key)
-            elif item["phase"] == "ready":
+            if item["phase"] == "disconnected":
+                previous = self.reconnect_attempts.get(key)
+                if previous is None or time.monotonic() - previous >= LIFECYCLE['reconnect_seconds']:
+                    self.reconnect_attempts[key] = time.monotonic()
+                    await self.reconnect_existing(key)
+            else:
                 try:
                     await self.models(key)
-                except (aiohttp.ClientError, TimeoutError, RuntimeError):
-                    if key in self.locks and self.machine(key).get("session") == item["session"]:
-                        self.machine(key, phase="disconnected", message="服务连接中断，请重新连接或关闭此实例")
+                    if self.machine(key).get('session') == item['session'] and self.machine(key)['phase'] == 'ready' and key not in self.stopping:
+                        self.heartbeat_failures[key] = 0
+                        self.machine(key, heartbeat={'last_success_at': time.time(), 'failures': 0, 'error': None})
+                except (aiohttp.ClientError, TimeoutError, RuntimeError, OSError) as exc:
+                    if self.machine(key).get('session') != item['session'] or self.machine(key)['phase'] != 'ready' or key in self.stopping:
+                        continue
+                    failures = self.heartbeat_failures.get(key, 0) + 1
+                    self.heartbeat_failures[key] = failures
+                    self.machine(key, heartbeat={**(item.get('heartbeat') or {}), 'failures': failures, 'error': error_message(exc)})
+                    if failures >= LIFECYCLE['heartbeat_failures']:
+                        self.machine(key, phase="disconnected", message="服务连接中断，保留原机器并尝试重连")
+                        self.log(key, '连续健康检查失败，保留原会话，等待恢复连接')
+
+    async def reconnect_existing(self, key):
+        """Reconnect only an existing owned session; never allocate or redeploy here."""
+        async with self.locks[key]:
+            item = self.machine(key)
+            session = item.get('session')
+            if self.closing or key in self.stopping or self.active[key] or item['phase'] != 'disconnected' or not session or not self.owned(key, session):
+                return
+            try:
+                sessions = await self.colab.sessions(item['account'])
+                if self.closing or key in self.stopping:
+                    return
+                if not any(s['name'] == session for s in sessions):
+                    await self.colab.close_tunnel(key)
+                    self.machine(key, phase='stopped', session=None, port=None, telemetry_port=None, deployment=None,
+                                 heartbeat=None, message='云端会话已结束，需要时请手动启动')
+                    self.log(key, '已确认原会话不存在；未自动申请新机器')
+                    return
+                port = await self.colab.tunnel(item['account'], session, self.store.get('settings', 'main')['identity'],
+                                               service_port=8000, tunnel_key=key)
+                self.machine(key, port=port, telemetry_port=self.colab.telemetry_ports.get(key))
+                await self.models(key)
+                if self.closing or key in self.stopping:
+                    return
+                self.heartbeat_failures[key] = 0
+                self.machine(key, phase='ready', message='原实例已重新连接',
+                             heartbeat={'last_success_at': time.time(), 'failures': 0, 'error': None})
+                self.log(key, '已恢复原会话的服务连接，未重新加载模型')
+            except (aiohttp.ClientError, TimeoutError, RuntimeError, OSError, ValueError) as exc:
+                if not self.closing and key not in self.stopping:
+                    self.machine(key, heartbeat={**(item.get('heartbeat') or {}), 'error': error_message(exc)},
+                                 message='原机器仍保留，稍后重试连接；也可手动重新连接')
+                    self.log(key, '原会话重连暂未成功：' + error_message(exc))
 
     async def maintain(self):
         while True:
-            await asyncio.sleep(15)
+            await asyncio.sleep(LIFECYCLE['heartbeat_seconds'])
             await self.idle_sweep()
 
     async def close(self):
         self.closing = True
+        if self.assignment_ping_task:
+            self.assignment_ping_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.assignment_ping_task
         if self.maintenance:
             self.maintenance.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -607,11 +710,12 @@ class LLM:
             if not task.done():
                 self.stopping.add(key)
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
-        if self.store.get("settings", "main")["stop_on_exit"]:
-            for item in self.all():
-                if item.get("session") and not self.active[item["id"]]:
-                    self.request_stop(item["id"])
         await asyncio.gather(*self.stops.values(), return_exceptions=True)
+        # Remote deployment/model processes use start_new_session; closing local tunnels does not kill them.
+        for item in self.all():
+            if item.get('session'):
+                self.machine(item['id'], phase='disconnected', port=None, telemetry_port=None,
+                             message='本地连接已关闭，云端实例保留')
         await self.colab.close()
         if self.http:
             await self.http.close()

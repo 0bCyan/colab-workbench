@@ -13,7 +13,6 @@ type Props = {
   request: <T = unknown>(path: string, method?: string, body?: unknown) => Promise<T>
   refresh: () => Promise<unknown>
   notify: (message: string) => void
-  openSettings: () => void
 }
 
 const defaults: LLMConfig = { preset_id: 'orca-flash-next-nvfp4-strata-mtp-g4-v1', context_tokens: 262144, gpu_memory: .9, cpu_threads: 12, cache_enabled: true, cache_mib: 4096, download_workers: 64 }
@@ -21,7 +20,7 @@ const normalizeConfig = (config?: LLMConfig): LLMConfig => ({ ...defaults, ...co
 type ToolCall = { id?: string; name: string; arguments: string }
 const busyPhases = new Set(['checking', 'provisioning', 'deploying', 'stopping'])
 
-export default function Services({ updateMachine, state, account: defaultAccount, request, refresh, notify, openSettings }: Props) {
+export default function Services({ updateMachine, state, account: defaultAccount, request, refresh, notify }: Props) {
   const services = state.llm?.services ?? []
   const presets = state.llm?.presets ?? []
   const [selected, setSelected] = useState(services[0]?.id ?? '')
@@ -208,7 +207,7 @@ export default function Services({ updateMachine, state, account: defaultAccount
         {runningInstances > 0 && <p className="service-account-load">当前账号运行 {runningInstances} 个服务实例</p>}
         <button className="primary full" disabled={!available || !presets.length || !configValid || !outputValid || !!pending || working || ready} onClick={() => act('start', async () => { if (!service) await createInstance(true); else { if (dirty || nameDirty || outputDirty) await save(); await request(`/llm/${selected}/start`, 'POST') } })}>{working ? <LoaderCircle size={14} className="spin" /> : <Power size={14} />}{working ? service?.phase === 'stopping' ? '正在关闭…' : '正在准备…' : ready ? '服务已启动' : service?.session ? '重新连接 / 重试' : service ? '启动服务' : '创建并启动'}</button>
         {(service?.session || working) && <button className="stop-button" disabled={!!pending || !!service?.active_requests || testing || service?.phase === 'stopping'} onClick={() => act('stop', () => request(`/llm/${selected}/stop`, 'POST'))}><Power size={13} />关闭服务并释放机器</button>}
-        <div className="compute-footer"><button className="text-button" disabled={!service} onClick={() => setLogs([])}><Terminal size={12} />服务日志</button><button className="text-button" onClick={openSettings}>{state.settings.idle_minutes ? `空闲 ${state.settings.idle_minutes}m 关闭` : '手动关机'}</button></div>
+        <div className="compute-footer"><button className="text-button" disabled={!service} onClick={() => setLogs([])}><Terminal size={12} />服务日志</button><span className="subtle" title={service?.assignment_keepalive?.status === 'error' ? service.assignment_keepalive.error ?? 'Colab 保活请求失败，原实例保留并重试' : '每 60 秒向 Colab 发送会话保活；空闲和本地退出均不释放实例'}>{service?.assignment_keepalive?.status === 'error' ? '保活重试中 · 手动关闭' : '持续运行 · 手动关闭'}</span></div>
       </div></section>{service ? <Performance account={account} machine={service} updateMachine={next => updateMachine?.(service.id, next)} metricsPath={`/api/llm/${service.id}/metrics`} metricsKey={service.id} /> : <Performance account={account} machine={{ phase: 'stopped', message: '尚未创建实例' }} metricsPath="/api/llm/uncreated/metrics" /> }</aside>
     </div>
     {deleting && service && <Dialog title="删除服务实例" close={() => setDeleting(false)}><p>删除 {service.name || recipe?.name} · {service.id.slice(-4)} 的本地配置和日志？</p><footer><button className="secondary" onClick={() => setDeleting(false)}>取消</button><button className="primary" disabled={!!pending} onClick={() => act('delete', async () => { await request(`/llm/${selected}`, 'DELETE'); setSelected(''); setDeleting(false); notify('实例已删除') })}>删除实例</button></footer></Dialog>}

@@ -46,13 +46,13 @@ export default function SettingsDialog({ saved, accounts, account, busy, chooseA
 
         <div className="settings-lifecycle">
           <label className="setting-row">
-            <span className="setting-copy"><strong>空闲自动关闭</strong><small>队列空闲后释放 GPU</small></span>
+            <span className="setting-copy"><strong>空闲自动关闭</strong><small>仅创作实例；LLM 持续运行</small></span>
             <select aria-label="空闲自动关闭" value={value.idle_minutes} disabled={disabled} onChange={e => change({ ...value, idle_minutes: Number(e.target.value) })}>
               {[0, 5, 10, 15, 30, 60, 120].map(n => <option key={n} value={n}>{n ? `${n} 分钟后` : '手动关闭'}</option>)}
             </select>
           </label>
           <label className="setting-row exit-setting">
-            <span className="setting-copy"><strong>退出时释放机器</strong><small>退出本地服务时生效</small></span>
+            <span className="setting-copy"><strong>退出时释放机器</strong><small>仅创作实例；LLM 退出后保留</small></span>
             <span className="setting-switch"><input type="checkbox" role="switch" aria-label="退出时释放机器" checked={value.stop_on_exit} disabled={disabled} onChange={e => change({ ...value, stop_on_exit: e.target.checked })} /><span aria-hidden="true" /></span>
           </label>
         </div>

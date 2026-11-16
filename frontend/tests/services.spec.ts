@@ -18,6 +18,8 @@ test('models choose their runtime and multiple instances on one account keep sep
   await page.goto('/')
   await page.getByRole('button', { name: '模型服务', exact: true }).click()
   await expect(page.getByRole('heading', { name: '模型服务', exact: true })).toBeVisible()
+  await expect(page.getByText('持续运行 · 手动关闭', { exact: true })).toBeVisible()
+  await expect(page.locator('.compute-footer')).not.toContainText('空闲 15m 关闭')
   await expect(page.getByRole('button', { name: '视频生成', exact: true })).toHaveCount(0)
   await expect(page.getByLabel('部署引擎')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '复制端点', exact: true })).toBeDisabled()

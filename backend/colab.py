@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 import shlex
@@ -67,8 +68,11 @@ class Colab:
     async def command(self, account, *args, timeout=60):
         launcher = self.launcher(account)
         command = [launcher_python(launcher), launcher] if os.name == "nt" else [launcher]
+        return await self.invoke([*command, *args], timeout)
+
+    async def invoke(self, command, timeout):
         process = await asyncio.create_subprocess_exec(
-            *command, *args,
+            *command,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -84,6 +88,16 @@ class Colab:
         if process.returncode:
             raise RuntimeError(output or f"Colab CLI exited {process.returncode}")
         return output
+
+    async def keepalive(self, account, session):
+        launcher = self.launcher(account)
+        output = await self.invoke([launcher_python(launcher), str(ROOT / 'backend/colab_keepalive.py'), launcher, session], 40)
+        for line in output.splitlines():
+            if line.startswith('WB_KEEPALIVE:'):
+                result = json.loads(line.removeprefix('WB_KEEPALIVE:'))
+                if result.get('status') in {'acknowledged', 'sent_without_reply'}:
+                    return result
+        raise RuntimeError('Colab activity ping did not return a delivery result')
 
     async def sessions(self, account):
         output = await self.command(account, "sessions")

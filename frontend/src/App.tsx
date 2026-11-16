@@ -308,7 +308,7 @@ export default function App({ accountName, signOut }: { accountName?: string; si
 
       {canvasOpened && <div className="canvas-page" hidden={page !== 'canvas'}><Suspense fallback={<div className="panel" style={{ padding: 24, flex: 1 }}>正在打开画布…</div>}><CanvasDemo accounts={state.accounts} visible={page === 'canvas'} refreshAccounts={refreshCanvasAccounts} notify={setNotice} /></Suspense></div>}
       {page === 'library' && <Library jobs={allJobs} accounts={state.accounts.map(a => a.id)} reuse={reuse} create={() => setPage('studio')} refresh={refresh} request={api} notify={setNotice} />}
-      {page === 'services' && <Services updateMachine={(id, next) => updateMachine(id, 'llm', next)} state={state} account={account} request={api} refresh={refresh} notify={setNotice} openSettings={() => setModal('settings')} />}
+      {page === 'services' && <Services updateMachine={(id, next) => updateMachine(id, 'llm', next)} state={state} account={account} request={api} refresh={refresh} notify={setNotice} />}
     </div>
 
     {modal === 'settings' && <SettingsDialog saved={state.settings} accounts={state.accounts} account={account} busy={!!busy} close={() => setModal(null)} chooseAccount={id => { setAccount(id); localStorage.setItem('fieldwork-account', id) }} save={async value => {

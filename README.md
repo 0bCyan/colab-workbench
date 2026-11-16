@@ -52,7 +52,7 @@ macOS 双击项目中的 **`启动工作台.command`**，或在项目目录运�
 
 打开 `http://127.0.0.1:8765`。首次运行自动安装本地依赖并构建页面。脚本固定使用锁文件 `uv.lock` / `frontend/package-lock.json`。
 
-正常退出请在启动窗口按 **Ctrl+C**。默认会释放工作台创建的机器。仅关闭浏览器页面不会停止本地后台；空闲关机仍由后台执行。
+正常退出请在启动窗口按 **Ctrl+C**。创作机器默认按设置释放；LLM 持续运行，退出本地服务也保留云端实例。仅关闭浏览器页面不会停止本地后台；创作实例的空闲关机仍由后台执行。
 
 ## 使用
 
@@ -119,7 +119,7 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-支持 `/models`、`/chat/completions`、`/completions`、`/responses`、`/messages`、`/messages/count_tokens` 及对应流式响应。Responses 使用完整请求输入历史，不支持服务端保存后的响应检索。端点仅监听本机。服务密钥与 Google 登录凭证无关，保存在 `.data/`，不进入常规状态响应、浏览器本地存储或日志。重新打开工作台不自动申请 GPU；退出释放和空闲关机设置同时适用于视频和 LLM。
+支持 `/models`、`/chat/completions`、`/completions`、`/responses`、`/messages`、`/messages/count_tokens` 及对应流式响应。Responses 使用完整请求输入历史，不支持服务端保存后的响应检索。端点仅监听本机。服务密钥与 Google 登录凭证无关，保存在 `.data/`，不进入常规状态响应、浏览器本地存储或日志。LLM 加载独立的持续运行策略：不因空闲或退出本地服务释放机器，只在手动关闭时停止。仅 LLM 每 60 秒向 Colab Tunnel Frontend 的 `/tun/m/<endpoint>/keep-alive/` 发送会话活动请求，加载与推理中同样执行；每 15 秒另外检查模型端点健康状态，沿用 SSH 的连接保活；连续 3 次失败后转为断线，每 60 秒尝试恢复原会话。重启工作台后也只恢复已记录且归属匹配的现有会话，不自动开新 GPU 或重新部署；确认会话已被回收时提示手动启动。
 
 模型服务的思考参数参考[阿里云官方接口](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。兼容 `enable_thinking`、`thinking_budget`、`preserve_thinking`，支持 `low / medium / xhigh` 三档，深度与预算互斥；官方深度别名 `high / max` 映射 `xhigh`，`minimal` 映射 `low`，`none` 关闭思考。预算模式依据官方阈值选择深度，并转换为本地引擎的 Token 上限，不声称自建服务与百炼托管调度完全相同。保留历史思考默认开启，需要调用端完整回传推理字段；关闭时不把已有历史推理送入模型，工具调用与工具结果仍保留。
 
@@ -136,6 +136,8 @@ print(response.choices[0].message.content)
 macOS 本地 Electron 应用包含独立 Python 后端和界面，直接调用本机 Colab CLI，不加载线上站点；打包与数据目录见 [本地桌面版](docs/desktop-app.md)。线上工作台与桌面版分别维护。
 
 Docker Compose 的安装、同版 CLI 多账号迁移、SSH 转发和可选 Caddy HTTPS 入口见 [容器部署文档](docs/container-deployment.md)。默认仅绑定服务器回环地址，启用域名时强制账号登录、没有注册入口；第三方 OAuth 尚未接入。
+
+LLM 持续运行会继续消耗账号额度，需在服务页手动关闭释放。本地退出后云端模型进程保留，本地端点、会话保活和健康检查停止；持续发送保活需要本地后台保持运行，重新打开后恢复原实例连接。连接健康检查与 SSH 保活不能取消 Colab 的空闲策略、最长运行时间、配额耗尽或资源回收限制，参见 [Colab 官方说明](https://research.google.com/colaboratory/faq.html)。当前 CLI 不提供保活命令，本项目通过所属账号的既有启动器和 AuthorizedSession 适配历史 CLI 使用的 [TFE 会话保活请求](https://github.com/googlecolab/google-colab-cli/blob/v0.6.0/src/colab_cli/client.py)，无需升级 CLI。授权与刷新凭证留在本机；不向 GPU 发送用户凭证。2xx 记为已确认，ReadTimeout 单独记为已发送但无响应，其他 HTTP／连接错误保留并重试；保活失败不会停止或重建实例。
 
 ## 模型来源与并行初始化
 
@@ -167,7 +169,7 @@ uv run python scripts/import_bundle.py /path/to/h3-video-g4-v1.json
 
 ## 工作台设置
 
-点击侧栏的设置按钮，或云端计算卡片里的空闲关机时间，打开小弹窗。弹窗覆盖在当前页面上，关闭后继续原来的编辑或作品浏览。账号切换立即生效，并启用「保存设置」供确认返回；仅切换账号时不会重新写入后台的连接或关机设置。空闲时间、退出时释放机器和 SSH 路径需要点击「保存设置」才生效。取消、右上角关闭、Esc 或点击弹窗外部会放弃未保存的参数修改，已经切换的账号会保留。保存失败时，错误和已填写的内容会留在弹窗内。单账号紧凑显示，多个账号自动排列；账号较多时在列表内滚动，保存按钮保持可见。
+点击侧栏的设置按钮，或创作云端计算卡片里的空闲关机时间，打开小弹窗。弹窗覆盖在当前页面上，关闭后继续原来的编辑或作品浏览。账号切换立即生效，并启用「保存设置」供确认返回；仅切换账号时不会重新写入后台的连接或关机设置。空闲时间、退出时释放机器和 SSH 路径需要点击「保存设置」才生效。取消、右上角关闭、Esc 或点击弹窗外部会放弃未保存的参数修改，已经切换的账号会保留。保存失败时，错误和已填写的内容会留在弹窗内。单账号紧凑显示，多个账号自动排列；账号较多时在列表内滚动，保存按钮保持可见。
 
 「高级连接」中保留 **SSH 私钥路径**：它指向本机的密钥文件，供上述 SSH 隧道连接 Colab 机器使用。它与 Colab 的 Google 账号登录凭证分别管理；改变这个路径不会切换 Google 账号。这是工作台共用的连接设置，各账号仍通过自己的 CLI 启动器访问各自会话。
 
@@ -201,7 +203,7 @@ uv run python scripts/import_bundle.py /path/to/h3-video-g4-v1.json
 - 使用 caller-generated UUID，并在向 `/prompt` 提交前落盘。网络中断后查询原 ID 的 history/queue；不会自动重新提交不确定的任务。
 - 取消使用 ComfyUI 的单任务取消接口。不会全局中断其他任务。下载结果期间不允许取消，防止已生成的成片丢失。
 - 「完成后关机」等到成片下载完成且本地队列已空，再检查 ComfyUI 是否还有直接从原生编辑器提交的任务。
-- 正常退出服务按设置释放自己的机器；后台被强制杀死、电脑休眠/断电或失去网络时，自动关机无法保证执行。重新打开后显示断线状态，可以重连恢复查询或直接关机。
+- 正常退出服务时创作机器按设置释放，LLM 云端实例保留；后台被强制杀死、电脑休眠/断电或失去网络时，自动关机无法保证执行。重新打开后显示断线状态，可以重连恢复查询或直接关机。
 - SSH 代理禁止隐式创建会话。重连失效机器不会偷偷申请 CPU 或新的付费 GPU。
 - 隧道、ComfyUI 和本地服务都监听 `127.0.0.1`。本地写接口检查 Origin、Host 和会话 token，不把 Google 凭证传给浏览器或云端。
 

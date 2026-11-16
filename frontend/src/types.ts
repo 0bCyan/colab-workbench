@@ -9,7 +9,7 @@ export type Settings = { identity: string; idle_minutes: number; stop_on_exit: b
 export type LLMConfig = { preset_id: string; context_tokens: number; gpu_memory: number; cpu_threads: number; cache_enabled?: boolean; cache_mib?: number; download_workers?: number }
 export type LLMRequestDefaults = { thinking: boolean; thinking_mode: 'effort' | 'budget'; preserve_thinking: boolean; reasoning_effort: 'low' | 'medium' | 'xhigh'; reasoning_budget_tokens: number; max_tokens: number; tools_enabled: boolean; parallel_tool_calls: boolean }
 export type LLMPreset = { id: string; name: string; engine: string; quantization: string; model: string; model_name: string; engine_version: string; size_gib: number; tier: string; reduced_refusal: boolean }
-export type LLMService = Machine & { id: string; name: string; account: string; config: LLMConfig; request_defaults?: LLMRequestDefaults; endpoint_path: string; model_name: string; active_requests: number }
+export type LLMService = Machine & { id: string; name: string; account: string; config: LLMConfig; request_defaults?: LLMRequestDefaults; endpoint_path: string; model_name: string; active_requests: number; assignment_keepalive?: { status: 'acknowledged' | 'sent_without_reply' | 'error'; last_attempt_at: number; http_status?: number | null; error?: string | null } | null }
 export type State = { bundles?: { id: string; available: boolean; bytes: number }[]; token: string; accounts: Account[]; jobs: Job[]; settings: Settings; drafts: { id: string; name: string; updated_at: number }[]; llm?: { presets: LLMPreset[]; services: LLMService[] } }
 
 export type MetricSample = {

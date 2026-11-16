@@ -5,6 +5,8 @@ import json
 from .config import ROOT
 
 LLM_ROOT = "/content/colab-workbench-llm"
+LIFECYCLE = {"idle_shutdown": False, "stop_on_exit": False, "heartbeat_seconds": 15,
+             "heartbeat_failures": 3, "reconnect_seconds": 60, "assignment_ping_seconds": 60}
 PRESETS = sorted(
     [json.loads(path.read_text()) for path in (ROOT / "templates/llm").glob("*.json")],
     key=lambda item: item["order"],

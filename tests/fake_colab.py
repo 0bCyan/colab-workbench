@@ -54,6 +54,12 @@ class FakeColab:
         self.calls.append((account, "exec", session))
         return 'WB_STATUS:{"phase":"ready","message":"test ready"}'
 
+    async def keepalive(self, account, session):
+        self.calls.append((account, 'keepalive', session))
+        if not any(item['name'] == session for item in self.active[account]):
+            raise RuntimeError('Colab activity ping HTTP 404')
+        return {'status': 'acknowledged', 'http_status': 200}
+
     async def tunnel(self, account, session, identity):
         if account in self.ports:
             return self.ports[account]

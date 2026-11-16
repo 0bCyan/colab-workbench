@@ -220,7 +220,8 @@ async def test_stream_slots_are_per_instance_and_blocks_stop_idle_without_forwar
     assert llm.machine(first)['last_activity'] > time.time() - 2
     llm.machine(first, last_activity=time.time() - 9999)
     await llm.idle_sweep()
-    await eventually(lambda: llm.machine(first)['phase'] == 'stopped')
+    assert llm.machine(first)['phase'] == 'ready'
+    assert llm.machine(first)['heartbeat']['failures'] == 0
     assert llm.machine(second)['phase'] == 'ready'
 
 
@@ -275,7 +276,7 @@ async def test_restart_retains_instance_endpoints_and_key_but_never_autostarts(t
         app.state.store.patch('settings', 'main', stop_on_exit=True)
 
 
-async def test_shutdown_inflight_allocation_does_not_orphan_vm(tmp_path):
+async def test_shutdown_inflight_allocation_preserves_owned_vm_for_manual_reconnect(tmp_path):
     fake = FakeLLM()
     app = create_app(tmp_path, driver=FakeColab(), llm_driver=fake, account_profiles=PROFILES)
     context = app.router.lifespan_context(app)
@@ -288,7 +289,15 @@ async def test_shutdown_inflight_allocation_does_not_orphan_vm(tmp_path):
     await asyncio.sleep(.05)
     fake.create_gate.set()
     await asyncio.wait_for(closing, timeout=5)
-    assert not fake.active['colab2']
+    assert len(fake.active['colab2']) == 1
+    assert not any(call[1] == 'stop' for call in fake.calls)
+    persisted = Store(tmp_path)
+    try:
+        item = persisted.get('llm_instances', key)
+        assert item['session'] == fake.active['colab2'][0]['name']
+        assert item['phase'] == 'disconnected' and item['port'] is None
+    finally:
+        persisted.close()
 
 
 @pytest.mark.parametrize('ids', [[], ['colab12'], ['colab7', 'colab12']])
@@ -550,3 +559,134 @@ async def test_private_converted_llm_still_requires_drive_before_allocation(tmp_
     finally:
         await llm.close()
         store.close()
+
+
+@pytest.mark.parametrize('stop_on_exit', [False, True])
+async def test_persistent_llm_ignores_media_exit_and_idle_policy(tmp_path, stop_on_exit):
+    video = FakeColab()
+    fake = FakeLLM(active=video.active)
+    app = create_app(tmp_path, driver=video, llm_driver=fake, account_profiles=PROFILES)
+    async with app.router.lifespan_context(app):
+        llm = app.state.llm
+        app.state.store.patch('settings', 'main', idle_minutes=5, stop_on_exit=stop_on_exit)
+        key = create(llm)
+        await start(llm, key)
+        session = llm.machine(key)['session']
+        app.state.manager.request_start('colab2')
+        await eventually(lambda: app.state.manager.machine('colab2')['phase'] == 'ready')
+        media_session = app.state.manager.machine('colab2')['session']
+        llm.machine(key, last_activity=time.time() - 7 * 86400)
+        await llm.idle_sweep()
+        assert llm.machine(key)['phase'] == 'ready'
+        assert not llm.stopping
+        assert llm.public(key)['lifecycle']['idle_shutdown'] is False
+        assert llm.public(key)['lifecycle']['stop_on_exit'] is False
+    assert any(item['name'] == session for item in fake.active['colab2'])
+    assert not any(call[1] == 'stop' for call in fake.calls)
+    assert any(item['name'] == media_session for item in video.active['colab2']) is not stop_on_exit
+    saved = Store(tmp_path)
+    try:
+        item = saved.get('llm_instances', key)
+        assert item['session'] == session and item['phase'] == 'disconnected' and item['port'] is None
+    finally:
+        saved.close()
+
+
+async def test_heartbeat_tolerates_transient_failure_and_recovers_same_session_without_loading(rig, monkeypatch):
+    llm, fake, _, _ = rig
+    first, second = create(llm), create(llm)
+    await start(llm, first)
+    await start(llm, second)
+    session = llm.machine(first)['session']
+    original = llm.models
+    failing = True
+
+    async def models(key):
+        if key == first and failing:
+            raise OSError('temporary tunnel failure')
+        return await original(key)
+
+    monkeypatch.setattr(llm, 'models', models)
+    calls = len(fake.calls)
+    for _ in range(2):
+        await llm.idle_sweep()
+        assert llm.machine(first)['phase'] == 'ready'
+        assert llm.machine(second)['heartbeat']['failures'] == 0
+    await llm.idle_sweep()
+    assert llm.machine(first)['phase'] == 'disconnected'
+    failing = False
+    await llm.idle_sweep()
+    assert llm.machine(first)['phase'] == 'ready'
+    assert llm.machine(first)['session'] == session
+    assert llm.machine(first)['heartbeat']['failures'] == 0
+    assert llm.machine(first)['heartbeat']['last_success_at'] > 0
+    assert not any(call[1] in {'create', 'exec', 'stop'} for call in fake.calls[calls:])
+
+
+async def test_reconnect_never_reallocates_and_ambiguous_failures_preserve_ownership(rig, monkeypatch):
+    llm, fake, _, _ = rig
+    first, second = create(llm), create(llm)
+    await start(llm, first)
+    await start(llm, second)
+    session, other = llm.machine(first)['session'], llm.machine(second)['session']
+    llm.machine(first, phase='disconnected')
+    native_sessions = fake.sessions
+
+    async def unavailable(_account):
+        raise TimeoutError('sessions query unavailable')
+
+    calls = len(fake.calls)
+    monkeypatch.setattr(fake, 'sessions', unavailable)
+    await llm.idle_sweep()
+    assert llm.machine(first)['session'] == session and llm.machine(first)['phase'] == 'disconnected'
+    # The retry interval applies to failed control calls too.
+    await llm.idle_sweep()
+    assert llm.machine(first)['session'] == session
+    monkeypatch.setattr(fake, 'sessions', native_sessions)
+    fake.active['colab2'] = [item for item in fake.active['colab2'] if item['name'] != session]
+    llm.reconnect_attempts[first] -= 61
+    await llm.idle_sweep()
+    assert llm.machine(first)['phase'] == 'stopped' and llm.machine(first)['session'] is None
+    assert llm.machine(second)['phase'] == 'ready' and llm.machine(second)['session'] == other
+    assert not any(call[1] in {'create', 'exec', 'stop'} for call in fake.calls[calls:])
+
+
+async def test_assignment_activity_pings_only_llm_sessions_including_active_inference(rig, monkeypatch):
+    llm, fake, _, manager = rig
+    first, second = create(llm), create(llm)
+    await start(llm, first)
+    await start(llm, second)
+    manager.request_start('colab2')
+    await eventually(lambda: manager.machine('colab2')['phase'] == 'ready')
+    media_session = manager.machine('colab2')['session']
+    # Real assignment activity must continue while inference is busy.
+    llm.active[first] = 1
+    try:
+        calls = len(fake.calls)
+        await llm.assignment_sweep()
+        pings = [call for call in fake.calls[calls:] if call[1] == 'keepalive']
+        assert {call[2] for call in pings} == {llm.machine(first)['session'], llm.machine(second)['session']}
+        assert media_session not in {call[2] for call in pings}
+        assert llm.machine(first)['assignment_keepalive']['status'] == 'acknowledged'
+        await llm.assignment_sweep()
+        assert [call for call in fake.calls[calls:] if call[1] == 'keepalive'] == pings
+        # Failure retries keep the VM and input generation intact; siblings still receive their pings.
+        original = fake.keepalive
+        async def flaky(account, session):
+            if session == llm.machine(first)['session']:
+                raise TimeoutError('provider ping unavailable')
+            return await original(account, session)
+        monkeypatch.setattr(fake, 'keepalive', flaky)
+        llm.assignment_ping_attempts.clear()
+        await llm.assignment_sweep()
+        assert llm.machine(first)['assignment_keepalive']['status'] == 'error'
+        assert llm.machine(first)['phase'] == 'ready' and llm.machine(first)['session']
+        assert llm.machine(second)['assignment_keepalive']['status'] == 'acknowledged'
+        assert not any(call[1] in {'create', 'stop', 'exec'} for call in fake.calls[calls:])
+        llm.stopping.add(second)
+        llm.assignment_ping_attempts.clear()
+        await llm.assignment_sweep()
+        assert second not in llm.assignment_ping_attempts
+        llm.stopping.discard(second)
+    finally:
+        llm.active[first] = 0

@@ -35,7 +35,7 @@ def test_media_stages_keep_parallel_completion_and_start_time(tmp_path, monkeypa
     assert result['stages']['download']['bytes'] == 100
 
 
-@pytest.mark.parametrize('model', ['minimax-h3', 'minimax-image', 'minimax-image-bf16'])
+@pytest.mark.parametrize('model', ['minimax-h3', 'minimax-image-bf16'])
 async def test_public_models_start_without_drive_catalog_or_authorization(tmp_path, model):
     store, fake = Store(tmp_path), FakeColab()
     manager = Manager(store, fake, PROFILES, bundles=Bundles(tmp_path))
@@ -52,7 +52,7 @@ async def test_public_models_start_without_drive_catalog_or_authorization(tmp_pa
         store.close()
 
 
-@pytest.mark.parametrize('model', ['minimax-h3', 'minimax-image', 'minimax-image-bf16'])
+@pytest.mark.parametrize('model', ['minimax-h3', 'minimax-image-bf16'])
 def test_video_install_overlaps_restore_and_serving_waits_for_both(tmp_path, monkeypatch, model):
     import json
     (tmp_path / 'media-config.json').write_text(json.dumps({'model': model}))

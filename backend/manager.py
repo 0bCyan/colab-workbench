@@ -79,6 +79,8 @@ class Manager:
     def request_start(self, account, model=None):
         machine = self.machine(account)
         model = model or machine.get('model', 'minimax-h3')
+        if model == 'minimax-image':
+            model = 'minimax-image-bf16'  # Reconnect a remembered retired image selection using the sole current recipe.
         preset = media_preset(model)
         if hasattr(self.colab, 'validate_connection'):
             self.colab.validate_connection(self.store.get('settings', 'main')['identity'])

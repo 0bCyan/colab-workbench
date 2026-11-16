@@ -26,19 +26,21 @@ test('H3 image has its own sizes and sampling, completes and preserves video edi
   const body = (await submitted).postDataJSON()
   expect(Object.values(body.graph).some((n: any) => n.class_type === 'MiniMaxH3ImageConditioning')).toBeTruthy()
   expect(Object.values(body.graph).some((n: any) => n.class_type === 'CreateVideo')).toBeFalsy()
+  expect(body.graph['1'].inputs.unet_name).toBe('minimax_h3_image_pruned_bf16.safetensors')
+  expect(body.graph['2'].inputs.clip_name).toBe('qwen3vl_32b_minimax_h3_bf16.safetensors')
   await expect(page.getByAltText('生成结果')).toBeVisible({ timeout: 30000 })
   expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(720)
   await page.screenshot({ path: '../screenshots/review/h3-image-workbench.png' })
 })
 
 
-test('image precision changes only loader weights and all ratio tiers stay editable', async ({ page }) => {
+test('image uses BF16 without a precision selector and all ratio tiers stay editable', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: '图片', exact: true }).click()
-  await expect(page.getByLabel('图片量化精度')).toBeVisible()
+  await expect(page.getByLabel('图片量化精度')).toHaveCount(0)
+  await expect(page.locator('.preset-card')).toContainText('BF16')
   await page.getByLabel('画面描述', { exact: true }).fill('保持这一段提示词')
   await page.getByLabel('随机种子', { exact: true }).fill('8765')
-  await page.getByLabel('图片量化精度').selectOption('bf16')
   await expect(page.getByLabel('画面描述', { exact: true })).toHaveValue('保持这一段提示词')
   await expect(page.getByLabel('随机种子', { exact: true })).toHaveValue('8765')
   await expect(page.getByText('MiniMax H3 Image', { exact: true })).toBeVisible()
@@ -70,4 +72,34 @@ test('image precision changes only loader weights and all ratio tiers stay edita
   await page.getByRole('button', { name: '视频', exact: true }).click()
   await expect(page.getByLabel('尺寸预设')).toBeVisible()
   await expect(page.getByLabel('图片量化精度')).toHaveCount(0)
+})
+
+
+test('loading a retired image draft upgrades only known loader weights and preserves the saved source', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '创作工作台' })).toBeVisible()
+  const state = await (await page.request.get('/api/state')).json()
+  const template = await (await page.request.get('/api/template?kind=image')).json()
+  expect(template.graph['1'].inputs.unet_name).toBe('minimax_h3_image_pruned_bf16.safetensors')
+  const graph = template.graph
+  graph['1'].inputs.unet_name = 'minimax_h3_image_pruned_int8_convrot.safetensors'
+  graph['2'].inputs.clip_name = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'
+  graph['4'].inputs.prompt = '保留的历史描述'
+  graph['4'].inputs.width = 4096; graph['4'].inputs.height = 4096
+  graph['6'].inputs.seed = 45678
+  const saved = await page.request.put('/api/drafts/retired-image', { headers: { 'X-Workbench-Token': state.token }, data: { name: '旧图片草稿', graph, positions: {} } })
+  expect(saved.ok()).toBeTruthy()
+  await page.reload()
+  await page.getByRole('button', { name: '草稿', exact: true }).click()
+  await page.getByRole('button', { name: /旧图片草稿/ }).click()
+  await expect(page.getByLabel('画面描述', { exact: true })).toHaveValue('保留的历史描述')
+  await expect(page.getByLabel('随机种子', { exact: true })).toHaveValue('45678')
+  await expect(page.getByLabel('画面宽度')).toHaveValue('4096')
+  await expect(page.getByLabel('图片量化精度')).toHaveCount(0)
+  await page.getByRole('button', { name: '更多工作流操作', exact: true }).click()
+  const current = JSON.parse(await page.getByLabel('API JSON').inputValue())
+  expect(current['1'].inputs.unet_name).toBe('minimax_h3_image_pruned_bf16.safetensors')
+  expect(current['2'].inputs.clip_name).toBe('qwen3vl_32b_minimax_h3_bf16.safetensors')
+  const original = await (await page.request.get('/api/drafts/retired-image')).json()
+  expect(original.graph['1'].inputs.unet_name).toBe('minimax_h3_image_pruned_int8_convrot.safetensors')
 })

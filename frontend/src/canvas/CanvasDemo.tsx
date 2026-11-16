@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Background, Controls, Handle, Panel, Position, ReactFlow, applyEdgeChanges, applyNodeChanges,
   type Connection, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react'
 import { Check, Copy, Cpu, Film, Image as ImageIcon, Layers2, LoaderCircle, MoreHorizontal, Pause, Pencil,
-  Play, Plus, Power, RotateCcw, Settings2, Square, Trash2, Type, X } from 'lucide-react'
+  Play, Plus, Power, RefreshCw, RotateCcw, Settings2, Square, Trash2, Type, X } from 'lucide-react'
 import Dialog from '../Dialog'
+import type { Account } from '../types'
 import { STORAGE, cancelTask, deleteBoard, duplicateBoard, enqueue, initialDemo, loadDemo, makeNode, moveTask, names, patchBoard, patchNode,
   progress, tick, uid, unfinished, type CardData, type CreativeNode, type Demo, type Instance, type Kind, type Task } from './model'
 import '@xyflow/react/dist/style.css'
@@ -12,7 +13,7 @@ import './canvas.css'
 type CardView = CardData & { ui: { task?: Task; percent: number; stage: string; queue: number; route: string;
   run: () => void; edit: () => void; cancel: () => void } }
 const icons = { image: ImageIcon, video: Film, text: Type }
-const modelLabel = (kind: Kind) => kind === 'image' ? 'H3 Image · INT8' : kind === 'video' ? 'H3 Video · INT8' : '提示词'
+const modelLabel = (kind: Kind) => kind === 'image' ? 'H3 Image · BF16' : kind === 'video' ? 'H3 Video · INT8' : '提示词'
 const taskStage = (task: Task | undefined, now: number) => !task ? '未运行' : task.status === 'done' ? '已完成'
   : task.status === 'cancelled' ? '已取消' : task.status === 'queued' ? '排队中'
     : task.loading && now - task.startedAt! < 1600 ? `加载${names[task.kind]}模型` : `生成${names[task.kind]}`
@@ -54,8 +55,13 @@ function CreativeCard({ id, data, selected }: NodeProps<Node<CardView, 'creative
 }
 const nodeTypes = { creative: CreativeCard }
 
-export default function CanvasDemo({ accounts, notify }: { accounts: string[]; notify: (message: string) => void }) {
-  const [demo, setDemo] = useState<Demo>(() => loadDemo(accounts))
+export default function CanvasDemo({ accounts, visible, refreshAccounts, notify }: {
+  accounts: Account[]; visible: boolean; refreshAccounts: (force?: boolean) => Promise<void>; notify: (message: string) => void
+}) {
+  const accountIds = accounts.map(account => account.id)
+  const accountKey = accountIds.join(',')
+  const [demo, setDemo] = useState<Demo>(() => loadDemo(accountIds))
+  const [quotaRefreshing, setQuotaRefreshing] = useState(false)
   const [now, setNow] = useState(Date.now())
   const flow = useRef<ReactFlowInstance<CreativeNode> | null>(null)
   const surface = useRef<HTMLDivElement>(null)
@@ -76,6 +82,26 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
   const active = demo.tasks.filter(unfinished)
   const working = active.length > 0 || demo.instances.some(i => i.phase === 'starting')
   const selected = board.nodes.filter(n => n.selected).map(n => n.id)
+
+  const refreshQuota = useCallback(async (force = false) => {
+    setQuotaRefreshing(true)
+    try { await refreshAccounts(force) }
+    catch { notify('账号额度刷新失败，请稍后重试') }
+    finally { setQuotaRefreshing(false) }
+  }, [refreshAccounts, notify])
+  useEffect(() => { if (visible) void refreshQuota() }, [visible, accountKey, refreshQuota])
+  function quotaLabel(id: string) {
+    const account = accounts.find(account => account.id === id)
+    if (!account) return '未发现账号'
+    if (!account.installed) return '未安装入口'
+    if (!account.credential_present) return '待登录'
+    const balance = account.usage?.balance
+    if (account.error) return typeof balance === 'number' ? `${balance.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} CU · 上次记录` : '额度读取失败'
+    return typeof balance === 'number' ? `${balance.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} CU` : quotaRefreshing ? '查询中…' : '额度未知'
+  }
+  function instanceLabel(instance: Instance) {
+    return `${instance.name} · ${instance.account} · ${quotaLabel(instance.account)}`
+  }
 
   useEffect(() => {
     if (!menu) return
@@ -240,14 +266,20 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
         <header className="cd-sidebar-heading"><span><Cpu size={16} />共享算力</span><div>
           <button className="icon-button" aria-label="新增演示实例" title="新增演示实例" onClick={() => {
             const next: Instance = { id: uid(), name: `G4 · ${String(demo.instances.length + 1).padStart(2, '0')}`,
-              account: accounts[0] ?? 'colab1', phase: 'stopped', paused: false }
+              account: accountIds[0] ?? 'colab1', phase: 'stopped', paused: false }
             setDemo(value => ({ ...value, instances: [...value.instances, next] })); setInstanceDialog(next)
           }}><Plus size={16} /></button>
           <button className="icon-button cd-close-compute" aria-label="收起算力面板" onClick={() => setShowCompute(false)}><X size={16} /></button>
         </div></header>
         <label className="cd-default"><span>当前画布默认实例</span><select aria-label="画布默认实例" value={board.instanceId} onChange={e => changeDefault(e.target.value)}>
-          {demo.instances.map(i => <option key={i.id} value={i.id}>{i.name} · {i.account}</option>)}</select></label>
-        <div className="cd-instances">{demo.instances.map(i => {
+          {demo.instances.map(i => <option key={i.id} value={i.id}>{instanceLabel(i)}</option>)}</select></label>
+        <section className="cd-account-quotas" aria-label="账号可用额度"><header><span>账号额度</span>
+          <button className="icon-button" aria-label="刷新画布账号额度" title="刷新账号额度" disabled={quotaRefreshing || !accounts.some(a => a.installed && a.credential_present)}
+            onClick={() => void refreshQuota(true)}><RefreshCw size={12} className={quotaRefreshing ? 'spin' : ''} /></button></header>
+          <div>{accounts.length ? accounts.map(account => <div key={account.id} aria-label={`${account.id} 的可用额度`} title={account.error || (account.checked_at ? `更新于 ${new Date(account.checked_at * 1000).toLocaleTimeString('zh-CN')}` : '尚未查询')}>
+            <span>{account.id}</span><strong className={account.error ? 'quota-unavailable' : ''}>{quotaLabel(account.id)}</strong></div>) : <span className="cd-no-accounts">未配置账号</span>}</div>
+        </section>
+        <div className="cd-instances" role="region" aria-label="算力实例列表" tabIndex={0}>{demo.instances.map(i => {
           const tasks = active.filter(t => t.instanceId === i.id), executing = tasks.find(t => t.status === 'running')
           const count = new Set([...demo.boards.filter(b => b.instanceId === i.id || b.nodes.some(n => n.data.instanceId === i.id)).map(b => b.id), ...tasks.map(t => t.boardId)]).size
           return <article key={i.id} className={`cd-instance ${instance.id === i.id ? 'is-default' : ''}`} aria-label={`算力实例 ${i.name}`}>
@@ -284,7 +316,7 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
             {task.status === 'running' && <div className="cd-task-progress" role="progressbar" aria-label={`${task.name} 的生成进度`} aria-valuenow={Math.floor(progress(task, now))} aria-valuemin={0} aria-valuemax={100}>
               <span style={{ width: `${progress(task, now)}%` }} /></div>}
             <div className="cd-task-bottom">{task.status === 'queued' ? <select aria-label={`${task.name} 的任务实例`} value={task.instanceId}
-              onChange={e => setDemo(value => moveTask(value, task.id, e.target.value, Date.now()))}>{demo.instances.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select>
+              onChange={e => setDemo(value => moveTask(value, task.id, e.target.value, Date.now()))}>{demo.instances.map(i => <option key={i.id} value={i.id}>{instanceLabel(i)}</option>)}</select>
               : <span><Cpu size={10} />{route?.name}</span>}
               <span>{task.status === 'running' ? `${Math.floor(progress(task, now))}%` : task.resolution}</span>
               {unfinished(task) && <button className="icon-button" aria-label={`取消任务 ${task.name}`} onClick={() => setDemo(value => cancelTask(value, task.id))}><X size={12} /></button>}
@@ -302,7 +334,7 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
         onChange={e => setDemo(value => patchNode(value, editingBoard.id, editing.id, { prompt: e.target.value }))} /></label>
       {editing.data.kind !== 'text' && <><label className="field"><span>执行实例</span><select aria-label="节点执行实例" disabled={editingBusy} value={editing.data.instanceId}
         onChange={e => setDemo(value => patchNode(value, editingBoard.id, editing.id, { instanceId: e.target.value }))}>
-        <option value="">跟随画布 · {demo.instances.find(i => i.id === editingBoard.instanceId)?.name}</option>{demo.instances.map(i => <option key={i.id} value={i.id}>{i.name} · {i.account}</option>)}</select></label>
+        <option value="">跟随画布 · {instanceLabel(demo.instances.find(i => i.id === editingBoard.instanceId)!)}</option>{demo.instances.map(i => <option key={i.id} value={i.id}>{instanceLabel(i)}</option>)}</select></label>
         <div className="field-row"><label className="field"><span>画幅与分辨率</span><select aria-label="节点分辨率" value={editing.data.resolution}
           onChange={e => setDemo(value => patchNode(value, editingBoard.id, editing.id, { resolution: e.target.value }))}>
           {(editing.data.kind === 'image' ? ['1:1 · 2K', '16:9 · 2K', '9:16 · 2K', '16:9 · 4K'] : ['16:9 · 768p', '9:16 · 768p', '1:1 · 768p']).map(v => <option key={v}>{v}</option>)}</select></label>
@@ -316,7 +348,7 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
     {instanceDialog && <Dialog title="演示实例" close={() => setInstanceDialog(null)} className="cd-settings">
       <label className="field"><span>实例名称</span><input aria-label="演示实例名称" maxLength={40} value={instanceDialog.name} onChange={e => setInstanceDialog({ ...instanceDialog, name: e.target.value })} /></label>
       <label className="field"><span>账号</span><select aria-label="演示实例账号" value={instanceDialog.account} disabled={instanceDialog.phase !== 'stopped'}
-        onChange={e => setInstanceDialog({ ...instanceDialog, account: e.target.value })}>{[...new Set([...accounts, instanceDialog.account])].map(account => <option key={account}>{account}</option>)}</select></label>
+        onChange={e => setInstanceDialog({ ...instanceDialog, account: e.target.value })}>{[...new Set([...accountIds, instanceDialog.account])].map(account => <option key={account} value={account}>{account} · {quotaLabel(account)}</option>)}</select></label>
       <footer><span className="subtle">RTX PRO 6000 · 96 GB · 演示</span><button className="primary" disabled={!instanceDialog.name.trim()} onClick={() => {
         updateInstance(instanceDialog.id, { name: instanceDialog.name.trim(), account: instanceDialog.account }); setInstanceDialog(null)
       }}>保存</button></footer>
@@ -350,6 +382,6 @@ export default function CanvasDemo({ accounts, notify }: { accounts: string[]; n
       }}>确认删除</button></footer>
     </Dialog>}
     {reset && <Dialog title="重置画布演示" close={() => setReset(false)}><p>清空演示画布、任务和版本，恢复初始示例。</p><footer><button className="secondary" onClick={() => setReset(false)}>取消</button>
-      <button className="primary" onClick={() => { setDemo(initialDemo(accounts)); setNodeDialog(null); setQueueFilter('all'); setHistory(false); setReset(false) }}>重置演示</button></footer></Dialog>}
+      <button className="primary" onClick={() => { setDemo(initialDemo(accountIds)); setNodeDialog(null); setQueueFilter('all'); setHistory(false); setReset(false) }}>重置演示</button></footer></Dialog>}
   </section>
 }

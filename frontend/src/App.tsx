@@ -21,15 +21,31 @@ async function api<T = unknown>(path: string, method = 'GET', body?: unknown): P
   return response.json()
 }
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-const savedDraft = (draft: Draft): Draft => ({ ...draft, name: draft.name.trim() || '未命名草稿' })
+const savedDraft = (draft: Draft): Draft => ({ ...currentImageDraft(draft), name: draft.name.trim() || '未命名草稿' })
 const isImageGraph = (graph: Graph | undefined) => !!getNode(graph, 'MiniMaxH3ImageConditioning')
 const getNode = (graph: Graph | undefined, type: string) => Object.values(graph ?? {}).find(n => n.class_type === type)
+
+function currentImageDraft(draft: Draft): Draft {
+  if (!isImageGraph(draft.graph)) return draft
+  const replacements: Record<string, string> = {
+    'minimax_h3_image_pruned_int8_convrot.safetensors': 'minimax_h3_image_pruned_bf16.safetensors',
+    'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors': 'qwen3vl_32b_minimax_h3_bf16.safetensors',
+  }
+  const graph = structuredClone(draft.graph)
+  let changed = false
+  for (const node of Object.values(graph)) {
+    const field = node.class_type === 'UNETLoader' ? 'unet_name' : node.class_type === 'CLIPLoader' ? 'clip_name' : undefined
+    if (field && replacements[String(node.inputs[field])]) { node.inputs[field] = replacements[String(node.inputs[field])]; changed = true }
+  }
+  return changed ? { ...draft, graph } : draft
+}
 
 export default function App({ accountName, signOut }: { accountName?: string; signOut?: () => Promise<void> }) {
   const [connected, setConnected] = useState(false)
   const [state, setState] = useState<State | null>(null)
   const [account, setAccount] = useState(() => localStorage.getItem('fieldwork-account') || '')
-  const [draft, setDraft] = useState<Draft | null>(null)
+  const [draft, setDraftState] = useState<Draft | null>(null)
+  const setDraft = useCallback((value: Draft) => setDraftState(currentImageDraft(value)), [])
   const modeDrafts = useRef<Partial<Record<'image' | 'video', Draft>>>({})
   const [page, setPage] = useState<'studio' | 'canvas' | 'library' | 'services'>(initialPage)
   const [canvasOpened, setCanvasOpened] = useState(initialPage === 'canvas')
@@ -49,6 +65,9 @@ export default function App({ accountName, signOut }: { accountName?: string; si
   const known = useRef(new Set<string>())
   const draftRevision = useRef(0)
   const stateRequest = useRef<Promise<State> | null>(null)
+  const quotaRequest = useRef<Promise<void> | null>(null)
+  const accountsRef = useRef(state?.accounts ?? [])
+  accountsRef.current = state?.accounts ?? []
   const updateMachine = useCallback((key: string, kind: 'media' | 'llm', machine: Machine) => {
     setState(previous => {
       if (!previous) return previous
@@ -77,6 +96,18 @@ export default function App({ accountName, signOut }: { accountName?: string; si
     }); setConnected(true); setError(previous => previous.startsWith('本地服务连接中断') ? '' : previous)
     return next
   }, [])
+
+  const refreshCanvasAccounts = useCallback((force = false): Promise<void> => {
+    if (quotaRequest.current) return quotaRequest.current
+    const accounts = accountsRef.current.filter(a => a.installed && a.credential_present && (force || !a.checked_at || Date.now() / 1000 - a.checked_at >= 60))
+    if (!accounts.length) return Promise.resolve()
+    const request = (async () => {
+      await Promise.allSettled(accounts.map(a => api(`/accounts/${a.id}/refresh`, 'POST')))
+      await refresh()
+    })()
+    quotaRequest.current = request
+    return request.finally(() => { if (quotaRequest.current === request) quotaRequest.current = null })
+  }, [refresh])
 
   useEffect(() => {
     let alive = true
@@ -147,8 +178,7 @@ export default function App({ accountName, signOut }: { accountName?: string; si
   const video = displayedJob?.outputs.find(o => /\.(mp4|webm|mov)$/i.test(o.filename))
   const images = displayedJob?.outputs.filter(o => /\.(png|jpg|jpeg|webp)$/i.test(o.filename)) ?? []
   const imageMode = isImageGraph(draft?.graph)
-  const bf16 = imageMode && getNode(draft?.graph, 'UNETLoader')?.inputs.unet_name === 'minimax_h3_image_pruned_bf16.safetensors'
-  const model = imageMode ? bf16 ? 'minimax-image-bf16' : 'minimax-image' : 'minimax-h3'
+  const model = imageMode ? 'minimax-image-bf16' : 'minimax-h3'
   const inputType = imageMode ? 'MiniMaxH3ImageConditioning' : 'MiniMaxH3ImageToVideo'
   const samplerType = imageMode ? 'KSampler' : 'BasicScheduler'
   const noiseType = imageMode ? 'KSampler' : 'RandomNoise'
@@ -172,15 +202,6 @@ export default function App({ accountName, signOut }: { accountName?: string; si
     const node = getNode(graph, type)
     if (!node) return setError('当前工作流不包含这个节点。请使用节点视图或 JSON 编辑。')
     Object.assign(node.inputs, values); setDraft({ ...draft, graph })
-  }
-  function changeImagePrecision(precision: string) {
-    if (!draft) return
-    const graph = structuredClone(draft.graph)
-    const unet = getNode(graph, 'UNETLoader'), clip = getNode(graph, 'CLIPLoader')
-    if (!unet || !clip) return setError('当前工作流缺少模型加载节点')
-    unet.inputs.unet_name = precision === 'bf16' ? 'minimax_h3_image_pruned_bf16.safetensors' : 'minimax_h3_image_pruned_int8_convrot.safetensors'
-    clip.inputs.clip_name = precision === 'bf16' ? 'qwen3vl_32b_minimax_h3_bf16.safetensors' : 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'
-    setDraft({ ...draft, graph })
   }
   function openJson() { setJson(JSON.stringify(draft?.graph, null, 2)); setModal('json') }
   function exportGraph() {
@@ -250,7 +271,7 @@ export default function App({ accountName, signOut }: { accountName?: string; si
 
       {page === 'studio' && <><nav className="mobile-tabs" aria-label="工作区">{(['stage', 'editor', 'compute'] as const).map((p, i) => <button key={p} aria-pressed={mobilePanel === p} className={mobilePanel === p ? 'active' : ''} onClick={() => setMobilePanel(p)}>{['预览与生成', '创作参数', '算力与性能'][i]}</button>)}</nav><div className={`studio-grid mobile-${mobilePanel}`}>
         <section className="editor-panel panel"><header className="panel-heading"><span><SlidersHorizontal size={15} /> 创作参数</span><div className="segmented creative-modes" aria-label="创作类型"><button aria-pressed={imageMode} className={imageMode ? 'active' : ''} disabled={!!busy} onClick={() => switchCreative('image')}><ImageIcon size={14} /> 图片</button><button aria-pressed={!imageMode} className={!imageMode ? 'active' : ''} disabled={!!busy} onClick={() => switchCreative('video')}><Film size={14} /> 视频</button></div></header>
-          <div className="editor-body"><div className={`preset-card ${imageMode ? 'image-preset' : ''}`}><div className="preset-icon">{imageMode ? <ImageIcon size={19} /> : <Film size={19} />}</div><div className="preset-details"><strong>MiniMax H3 {imageMode ? 'Image' : 'Video'}</strong><small>{imageMode ? '' : 'INT8 ConvRot · '}本次 {Number(samplerNode?.inputs.steps ?? (imageMode ? 6 : 20))} 步</small>{imageMode && <select aria-label="图片量化精度" disabled={busy === 'template'} value={bf16 ? 'bf16' : 'int8'} onChange={e => changeImagePrecision(e.target.value)}><option value="int8">INT8 ConvRot</option><option value="bf16">BF16</option></select>}</div>{!imageMode && <span className="tag">预设</span>}</div>
+          <div className="editor-body"><div className={`preset-card ${imageMode ? 'image-preset' : ''}`}><div className="preset-icon">{imageMode ? <ImageIcon size={19} /> : <Film size={19} />}</div><div className="preset-details"><strong>MiniMax H3 {imageMode ? 'Image' : 'Video'}</strong><small>{imageMode ? 'BF16 · ' : 'INT8 ConvRot · '}本次 {Number(samplerNode?.inputs.steps ?? (imageMode ? 6 : 20))} 步</small></div>{!imageMode && <span className="tag">预设</span>}</div>
             <label className="field"><span>项目名称</span><input aria-label="项目名称" disabled={busy === 'template'} value={draft.name} placeholder="作品名称（可选）" onChange={e => setDraft({ ...draft, name: e.target.value })} maxLength={100} /></label>
             <label className="field prompt-field"><span>画面描述 <span className="label-hint">PROMPT</span></span><textarea aria-label="画面描述" value={prompt} placeholder="描述主体、动作和镜头…" onChange={e => updateNode(inputType, { prompt: e.target.value })} spellCheck={false} disabled={!inputNode || busy === 'template'} /></label>
             <Resolution key={imageMode ? 'image' : 'video'} image={imageMode} width={Number(inputNode?.inputs.width ?? 1344)} height={Number(inputNode?.inputs.height ?? 768)} disabled={!inputNode || busy === 'template'} change={values => updateNode(inputType, values)} />
@@ -285,7 +306,7 @@ export default function App({ accountName, signOut }: { accountName?: string; si
         </aside>
       </div></>}
 
-      {canvasOpened && <div className="canvas-page" hidden={page !== 'canvas'}><Suspense fallback={<div className="panel" style={{ padding: 24, flex: 1 }}>正在打开画布…</div>}><CanvasDemo accounts={state.accounts.map(a => a.id)} notify={setNotice} /></Suspense></div>}
+      {canvasOpened && <div className="canvas-page" hidden={page !== 'canvas'}><Suspense fallback={<div className="panel" style={{ padding: 24, flex: 1 }}>正在打开画布…</div>}><CanvasDemo accounts={state.accounts} visible={page === 'canvas'} refreshAccounts={refreshCanvasAccounts} notify={setNotice} /></Suspense></div>}
       {page === 'library' && <Library jobs={allJobs} accounts={state.accounts.map(a => a.id)} reuse={reuse} create={() => setPage('studio')} refresh={refresh} request={api} notify={setNotice} />}
       {page === 'services' && <Services updateMachine={(id, next) => updateMachine(id, 'llm', next)} state={state} account={account} request={api} refresh={refresh} notify={setNotice} openSettings={() => setModal('settings')} />}
     </div>

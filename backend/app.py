@@ -44,7 +44,7 @@ class Submission(Draft):
 
 class CreativeStart(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    model: Literal['minimax-h3', 'minimax-image', 'minimax-image-bf16'] = 'minimax-h3'
+    model: Literal['minimax-h3', 'minimax-image-bf16'] = 'minimax-h3'
 
 
 class Settings(BaseModel):
@@ -233,8 +233,8 @@ def create_app(directory=DATA, driver=None, account_profiles=None, llm_driver=No
                 "preset": {"comfy_commit": COMFY_COMMIT, "model_revision": MODEL_REVISION, "models": MODEL_FILES}}
 
     @app.get("/api/template")
-    async def template(kind: Literal['video', 'image'] = 'video', precision: Literal['int8', 'bf16'] = 'int8'):
-        item = MEDIA['image_bf16' if kind == 'image' and precision == 'bf16' else kind]
+    async def template(kind: Literal['video', 'image'] = 'video'):
+        item = MEDIA[kind]
         return {"name": item['name'], "graph": json.loads((ROOT / 'templates' / item['template']).read_text()), "positions": {}}
 
     @app.post("/api/accounts/{account}/refresh")

@@ -22,7 +22,7 @@ COMMIT = "4d64a8bc072b81c9b47321789b4d83fb7348ae2a"
 def selected_model():
     config = ROOT / 'media-config.json'
     model = json.loads(config.read_text())['model'] if config.exists() else 'minimax-h3'
-    if model not in {'minimax-h3', 'minimax-image', 'minimax-image-bf16'}:
+    if model not in {'minimax-h3', 'minimax-image-bf16'}:
         raise ValueError('未知创作模型')
     return model
 
@@ -94,8 +94,7 @@ def restore_cloud_weights():
     fallback = ROOT / 'bundle-config.json'
     cloud = json.loads(fallback.read_text()) if fallback.exists() else None
     model = selected_model()
-    key = {'minimax-h3': 'h3-video-g4-v1', 'minimax-image': 'h3-image-g4-v1',
-           'minimax-image-bf16': 'minimax-image-bf16'}[model]
+    key = {'minimax-h3': 'h3-video-g4-v1', 'minimax-image-bf16': 'minimax-image-bf16'}[model]
     if source == 'hf':
         index = json.loads((ROOT / 'public-weights.json').read_text())
     else:
